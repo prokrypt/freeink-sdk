@@ -155,8 +155,8 @@ void coverShelf(Frame<N>& frame, Rect rect, const CoverShelfProps& props) {
   const int16_t gap = nonnegative(props.gap);
   const int16_t width = props.cardWidth > 0 ? min(body.width, props.cardWidth) : 0;
   const uint16_t visible = !body.empty() && width > 0 ? (body.width + gap) / (width + gap) : 0;
-  CatalogWindow local;
-  CatalogWindow& window = props.window ? *props.window : local;
+  CatalogWindow fallbackWindow;
+  CatalogWindow& window = props.window ? *props.window : fallbackWindow;
   window.sync(props.count, visible);
   auto control = [&](ButtonProps buttonProps, int16_t desiredWidth, bool available) {
     if (!hasButton(buttonProps) || header.empty()) return;
@@ -214,8 +214,8 @@ struct CatalogPageProps {
 template <size_t N>
 void catalogPage(Frame<N>& frame, Rect rect, const CatalogPageProps& props) {
   using namespace media_detail;
-  CatalogWindow local;
-  CatalogWindow& window = props.window ? *props.window : local;
+  CatalogWindow fallbackWindow;
+  CatalogWindow& window = props.window ? *props.window : fallbackWindow;
   window.sync(props.count, 0);
   if (rect.empty()) return;
   const bool enabled = props.enabled && !hasState(props.state, StateDisabled);
