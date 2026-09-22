@@ -46,13 +46,8 @@ class FrontlightManager {
 #ifdef FREEINK_FRONTLIGHT_LS
   void park();
 
-  // Undo park() at boot so begin() can re-attach the LEDC channels. The release is
-  // UNCONDITIONAL: park() latches a digital pad hold that survives deep sleep AND
-  // the wake reset, while _lsParked (a DRAM flag) is lost on reset — so after a
-  // wake the hold is still present even though _lsParked reads false. Releasing
-  // unconditionally (gpio_hold_dis on a non-held pad is a harmless no-op) is the
-  // only way to guarantee the held pad is cleared; every other driver releases
-  // holds unconditionally before driving for this reason.
+  // Undo park() at boot so begin() can re-attach the LEDC channels. Pad holds
+  // survive the wake reset, so this must release them unconditionally.
   void releaseOnWake();
 #endif
 
@@ -109,16 +104,7 @@ class FrontlightManager {
 #endif
 #endif
 #ifdef FREEINK_FRONTLIGHT_LS
-  // Keep RC_FAST powered through light sleep only while the light is actually
-  // lit. The LEDC driver's KEEP_ALIVE config pins RC_FAST (and the digital
-  // domain at its higher sleep bias) for every light-sleep window from boot;
-  // begin() cancels that via the refcounted sleep sub-mode API and apply()
-  // re-arms it on 0<->nonzero total-duty transitions, so dark idle sleeps at
-  // full depth.
-  void updateLsKeepAlive(bool lit);
-  bool _lsAttachOk = false;        // both channel attaches succeeded (refcount is balanced)
-  bool _lsKeepAliveArmed = false;  // our own +1 on the RC_FAST sleep sub-mode is active
-  bool _lsParked = false;          // park() has driven + held the frontlight pads LOW
+  bool _lsAttachOk = false;  // at least one KEEP_ALIVE channel owns timer 0
 #endif
 
   bool _begun = false;
