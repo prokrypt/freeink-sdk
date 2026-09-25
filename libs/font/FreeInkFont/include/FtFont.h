@@ -100,6 +100,15 @@ class FtFont : public RasterFont {
 
   bool ready() const { return ready_; }
 
+  // The last failed glyph operation's stage and raw FreeType error code.
+  // A zero error means the failure came from validation outside FreeType.
+  enum class GlyphFailure : uint8_t { None, MissingGlyph, Size, Load, Embolden, Render, Bounds, BitmapBuffer };
+  GlyphFailure lastGlyphFailure() const { return lastGlyphFailure_; }
+  int lastGlyphError() const { return lastGlyphError_; }
+  enum class InitFailure : uint8_t { None, Library, Source, Allocation, OpenFace, SetSize };
+  InitFailure lastInitFailure() const { return lastInitFailure_; }
+  int lastInitError() const { return lastInitError_; }
+
   // Read face metadata without retaining a face. The family buffer is
   // optional and always NUL-terminated when familyCapacity is nonzero.
   static InspectResult inspectMemory(const uint8_t* data, uint32_t length, FaceInfo& info, char* family = nullptr,
@@ -142,6 +151,13 @@ class FtFont : public RasterFont {
   // Generic low-level access for renderers that cache glyph IDs or need
   // fractional pixel sizes. A zero glyph ID is always missing. Bitmap data is
   // 8-bit coverage and remains valid until the next glyph load on this face.
+  //
+  // Kerning consults the legacy 'kern' table first (FT_Get_Kerning), then
+  // falls back to the GPOS 'kern' feature's pair-adjustment lookups (see
+  // Gpos.h) — modern fonts ship pair kerning exclusively there, which
+  // FreeType alone cannot see. The GPOS table stays cached for the face's
+  // lifetime (queries arrive per adjacent pair at render time); a streamed
+  // face's owned copy is bounded by setGposByteBudget().
   GlyphId glyphId(uint32_t codepoint) const;
   bool metrics26_6(uint32_t codepoint, uint32_t pixelSize26_6, GlyphMetrics& out);
   bool metricsGlyph26_6(GlyphId glyph, uint32_t pixelSize26_6, GlyphMetrics& out);
@@ -189,6 +205,14 @@ class FtFont : public RasterFont {
   // face is initialized again.
   void releaseLigatureTable();
 
+  // GPOS analogues of the GSUB pair above, governing the kerning fallback's
+  // table cache. The stream budget matters more here than for GSUB: GPOS
+  // cannot be resolved once and released (kern pairs are queried throughout
+  // rendering), so a streamed face's owned copy stays resident — a rejected
+  // or failed load simply disables GPOS kerning (legacy 'kern' still works).
+  void setGposByteBudget(size_t maxBytes);
+  void releaseKerningTable();
+
   // Rasterizes one glyph to an 8-bit alpha GlyphBitmap. Valid until the next
   // rasterize() on this face (FreeType glyph-slot lifetime).
   const GlyphBitmap* rasterize(uint32_t codepoint, uint16_t sizePx) override;
@@ -202,6 +226,7 @@ class FtFont : public RasterFont {
 
   bool finishInit(uint16_t sizePx, int weight, bool italic);  // shared tail of init/initStream
   void ensureGsubLoaded();
+  void ensureGposLoaded();
 
   // A monochrome FT_Bitmap is 1-bpp packed (pitch = (width+7)/8), but
   // GlyphBitmap's contract is 8-bit coverage at stride `width` (see Font.h).
@@ -220,6 +245,10 @@ class FtFont : public RasterFont {
   bool emboldenBold_ = false;  // faux bold (static or no wght axis); per-glyph outline embolden
   uint32_t size26_6_ = 0;
   RenderOptions options_{};
+  GlyphFailure lastGlyphFailure_ = GlyphFailure::None;
+  int lastGlyphError_ = 0;
+  InitFailure lastInitFailure_ = InitFailure::None;
+  int lastInitError_ = 0;
   GlyphBitmap glyph_{};  // last rasterized glyph (points into the FT slot buffer, or monoBuf_)
   uint8_t* monoBuf_ = nullptr;
   size_t monoBufCap_ = 0;
@@ -250,6 +279,16 @@ class FtFont : public RasterFont {
   bool gsubLoadAttempted_ = false;
   size_t gsubByteBudget_ = kMaxGsubBytes;
   void freeGsubTable();
+
+  // GPOS kerning cache — same ownership/lifetime discipline as the GSUB
+  // fields above (borrowed view for memory-backed faces, budgeted owned copy
+  // for streamed ones, reset in deinit() because glyph IDs are face-local).
+  const uint8_t* gposTable_ = nullptr;
+  size_t gposTableSize_ = 0;
+  bool gposTableOwned_ = false;
+  bool gposLoadAttempted_ = false;
+  size_t gposByteBudget_ = kMaxGsubBytes;
+  void freeGposTable();
 };
 
 }  // namespace font
