@@ -96,6 +96,11 @@ class Uc8179Driver : public PanelDriver {
             false, false};
   }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
+  // Starts the XTF_PRE_BW_MID base transition (or the B/W fallback) and returns
+  // while it runs; displayFinish() completes it. Lets the host render its AA
+  // planes during the ~670 ms base waveform instead of after it.
+  bool displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
+  bool supportsDeferredGrayscaleBase() const override { return true; }
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
@@ -117,10 +122,20 @@ class Uc8179Driver : public PanelDriver {
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.
   void runGrayscalePrecondition(EpdBus& bus);
+  // Split halves of runGrayscalePrecondition(): start returns false when the
+  // pre-pass is skipped (first AA page / no baseline); finish rides out BUSY.
+  bool startGrayscalePrecondition(EpdBus& bus);
+  void finishGrayscalePrecondition(EpdBus& bus);
   // Blocking, non-flashing B/W transition used by a Fast page immediately
   // after AA. The generic reader path does not call displayGrayscaleBase(), so
   // display() routes its post-AA Fast base here as well.
   void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
+  bool transitionGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb);
+  void transitionGrayscaleBaseFinish(EpdBus& bus, const uint8_t* fb, bool turnOff, bool preconditionRunning,
+                                     bool deferOldPlane);
+  // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
+  // it stale. Every entry point that relies on DTM1 calls this first.
+  void syncStaleOldPlane(EpdBus& bus);
 
   const Uc8179Config& _cfg;
 
@@ -168,6 +183,12 @@ class Uc8179Driver : public PanelDriver {
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
+  bool _pendingGrayBase = false;  // the pending refresh is a deferred AA base transition
+  bool _pendingGrayPre = false;   // ...and its XTF_PRE_BW_MID waveform is running
+  // A deferred base finished without re-sending DTM1: the AA LSB upload that
+  // normally follows overwrites it immediately. DTM1 still holds the previous
+  // page until syncStaleOldPlane() or that upload runs.
+  bool _oldPlaneStale = false;
 };
 
 PanelDriver& uc8179Driver();

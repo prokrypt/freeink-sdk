@@ -893,6 +893,29 @@ void FreeInkDisplay::displayGrayscaleBase(RefreshMode fallback, bool turnOffScre
   _driver->beginGrayscale(_bus, frameBuffer, GrayscaleMode::Overlay, toInternal(fallback), turnOffScreen);
 }
 
+bool FreeInkDisplay::supportsDeferredGrayscaleBase() const {
+  return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsDeferredGrayscaleBase();
+}
+
+bool FreeInkDisplay::displayGrayscaleBaseAsync(RefreshMode fallback) {
+  if (!supportsDeferredGrayscaleBase()) {
+    displayGrayscaleBase(fallback, false);
+    return false;
+  }
+  cancelGrayscalePass();
+  _grayPassFailed = false;
+  syncPendingAsync();
+  _shadowValid = false;
+#ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
+  _refreshPending = _driver->displayGrayscaleBaseStart(_bus, frameBuffer, toInternal(fallback), false);
+  _pendingSingleBufferFrame = _refreshPending ? frameBuffer : nullptr;
+#else
+  _refreshPending = _driver->displayGrayscaleBaseStart(_bus, frameBufferActive ? frameBufferActive : frameBuffer,
+                                                       toInternal(fallback), false);
+#endif
+  return _refreshPending;
+}
+
 void FreeInkDisplay::preconditionGrayscale() {
   if (_inverted) return;
   syncPendingAsync();

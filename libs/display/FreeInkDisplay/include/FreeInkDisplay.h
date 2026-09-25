@@ -126,6 +126,12 @@ class FreeInkDisplay {
   // follows. X3 uses the OEM differential base waveform; other panels display
   // normally with `fallback` mode. See PanelDriver::displayGrayscaleBase.
   void displayGrayscaleBase(RefreshMode fallback = HALF_REFRESH, bool turnOffScreen = false);
+  // Deferred displayGrayscaleBase(): true while the base waveform still runs;
+  // waitRefreshComplete() (or any later display call) finishes it, and the
+  // framebuffer must stay untouched until then. Drivers without a deferred
+  // base run the blocking one and return false.
+  bool displayGrayscaleBaseAsync(RefreshMode fallback = FAST_REFRESH);
+  bool supportsDeferredGrayscaleBase() const;
   // Starts a mode-bound pass. Absolute uploads must cover both complete planes
   // (full buffers or consecutive strips per plane) before displayGrayBuffer().
   // False means the requested mode is unavailable; no base was painted.
