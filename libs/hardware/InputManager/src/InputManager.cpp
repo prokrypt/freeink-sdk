@@ -1250,7 +1250,7 @@ void InputManager::beginTouch() {
 
 uint8_t InputManager::serviceTouch() {
 #if FREEINK_CAP_TOUCH
-  if (!touchDataEnabled) {
+  if (!touchDataEnabled || touchAsleep) {
     return 0;
   }
   const unsigned long now = millis();
@@ -1847,6 +1847,53 @@ void InputManager::beginGt911() {
 #endif
 }
 
+bool InputManager::setTouchSleep(const bool asleep) {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller != BoardConfig::TouchController::Gt911 || gt911Addr == 0 || t.irq < 0) return false;
+  if (asleep == touchAsleep) return true;
+
+  if (asleep) {
+    if (touchPressed || touchHomeKeyDown) return false;
+    // GT9xx sleep entry, as in the Linux goodix driver: hold INT low, send the
+    // screen-off command (0x05 to 0x8040), then give the controller ~58 ms to
+    // settle. INT stays driven low while it sleeps.
+    pinMode(t.irq, OUTPUT);
+    digitalWrite(t.irq, LOW);
+    delay(5);
+    Wire.beginTransmission(gt911Addr);
+    Wire.write(0x80);
+    Wire.write(0x40);
+    Wire.write(static_cast<uint8_t>(0x05));
+    if (Wire.endTransmission() != 0) {
+      pinMode(t.irq, INPUT);
+      return false;
+    }
+    delay(58);
+    touchAsleep = true;
+    return true;
+  }
+
+  // Wake: INT high for 2-5 ms, then the INT sync the goodix driver runs before
+  // handing the line back (low for 50 ms, then input). The address strap is
+  // only latched on reset, so this cannot move the controller's address.
+  digitalWrite(t.irq, HIGH);
+  delay(5);
+  digitalWrite(t.irq, LOW);
+  delay(50);
+  pinMode(t.irq, INPUT);
+  touchAsleep = false;
+  uint8_t status = 0;
+  if (!gt911ReadReg(0x814E, &status, 1)) {
+    // No answer to the wake pulse: fall back to the full reset and probe.
+    beginGt911();
+    return touchDataEnabled;
+  }
+  // Drop any frame latched before or during sleep so it cannot surface as a
+  // stale touch.
+  gt911ClearStatus();
+  return true;
+}
+
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
   Wire.beginTransmission(gt911Addr);
   Wire.write(static_cast<uint8_t>(reg >> 8));
@@ -2247,5 +2294,9 @@ void InputManager::pollGt911(const unsigned long now) {
 
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
 }
+
+#else
+
+bool InputManager::setTouchSleep(bool) { return false; }
 
 #endif  // FREEINK_CAP_TOUCH
