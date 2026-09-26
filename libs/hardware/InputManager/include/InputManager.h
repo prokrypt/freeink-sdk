@@ -107,6 +107,13 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
+  // Puts a GT911 into its sleep mode, where it stops scanning, or wakes it.
+  // While asleep the controller is not polled, so neither touches nor its
+  // capacitive Home key are reported. Sleep is refused while a contact or the
+  // Home key is down. Returns true once the controller is in the requested
+  // state; false on boards without a GT911 or when it did not respond.
+  bool setTouchSleep(bool asleep);
+  bool isTouchAsleep() const { return touchAsleep; }
   // True only while a GT911 controller is present. Other touch controllers
   // retain their existing single-contact contract.
   bool supportsMultiTouch() const;
@@ -381,6 +388,7 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchAsleep = false;              // GT911 sent to sleep by setTouchSleep()
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll
