@@ -169,6 +169,7 @@ bool SecureClient::abortRequested() {
 
 int SecureClient::connect(const char* host, uint16_t port) {
   _aborted = false;
+  _readFailed = false;
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
@@ -203,7 +204,10 @@ int SecureClient::read(uint8_t* buf, size_t size) {
 
   const int err = wolfSSL_get_error(ssl, n);
   if (isWantIo(err)) return 0;
-  if (err == WOLFSSL_ERROR_ZERO_RETURN) {
+  // wolfSSL_read returns 0 for close_notify and for the transport closing
+  // under us: both are how a close-delimited body ends, so neither counts as
+  // a failed read.
+  if (n == 0 || err == WOLFSSL_ERROR_ZERO_RETURN) {
     _connected = false;
     return 0;
   }
@@ -215,6 +219,7 @@ int SecureClient::read(uint8_t* buf, size_t size) {
                   (unsigned)ESP.getMaxAllocHeap());
   }
   _connected = false;
+  _readFailed = true;
   return -1;
 }
 

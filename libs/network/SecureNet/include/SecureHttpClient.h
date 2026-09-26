@@ -533,6 +533,8 @@ class SecureHttpClient {
   }
 
   // Streams body bytes until the peer closes (Connection: close, no length).
+  // Only an orderly close ends the body: a TLS read error (out of memory, bad
+  // MAC) also drops the connection, and must not pass as a complete response.
   bool readUntilClose(Client& c, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
     uint8_t buf[READ_CHUNK];
     unsigned long deadline = millis() + _timeoutMs;
@@ -540,7 +542,7 @@ class SecureHttpClient {
       if (isAborted(shouldAbort)) return false;
       const int n = c.read(buf, sizeof(buf));
       if (n <= 0) {
-        if (!c.connected() && c.available() == 0) return true;
+        if (!c.connected() && c.available() == 0) return !(&c == &_secure && _secure.readFailed());
         if (static_cast<int32_t>(millis() - deadline) >= 0) return false;
         delay(2);
         continue;
