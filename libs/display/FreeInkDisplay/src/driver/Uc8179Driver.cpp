@@ -20,7 +20,12 @@ namespace {
 // white padding for the non-visible gates) are batched into one write per
 // chunk. Static: uploads are serialized by the display, and it keeps 4 KB off
 // the task stack.
+#if CONFIG_IDF_TARGET_ESP32S3
 constexpr size_t STREAM_CHUNK_BYTES = 4000;
+#else
+// C3 (newer X4 UC8179 batches): keep the static footprint small on its tighter heap.
+constexpr size_t STREAM_CHUNK_BYTES = 400;
+#endif
 uint8_t streamChunk[STREAM_CHUNK_BYTES];
 
 template <typename FillRow>
@@ -141,11 +146,13 @@ Uc8179Driver::Uc8179Driver(const Uc8179Config& cfg)
       _bufferSize(static_cast<uint32_t>(BoardConfig::ACTIVE.displayWidth / 8) * BoardConfig::ACTIVE.displayHeight) {}
 
 uint32_t Uc8179Driver::spiHz() const {
-  // UC8179 serial write timing is rated to 20 MHz. The shared Xteink board
-  // default (10 MHz) covers every X4 Pro controller batch; on this one the
-  // plane uploads dominate an AA page turn, so run at the rated clock. The
-  // X4 Pro SD card is on SDMMC, so nothing else shares this bus.
-  return 20000000;
+  // UC8179 serial write timing is rated to 20 MHz. Where the SD card is on
+  // native SDMMC (X4 Pro) nothing else shares this bus and the plane uploads
+  // dominate an AA page turn, so run at the rated clock. Newer C3 X4 batches
+  // also carry a UC8179 but share the bus with the SPI SD card: keep the board
+  // default there.
+  if (BoardConfig::ACTIVE.sdmmc.busWidth != 0) return 20000000;
+  return BoardConfig::ACTIVE.displaySpiHz != 0 ? BoardConfig::ACTIVE.displaySpiHz : 16000000;
 }
 
 PanelGeometry Uc8179Driver::geometry() const { return {_w, _h, _wb, _bufferSize}; }
