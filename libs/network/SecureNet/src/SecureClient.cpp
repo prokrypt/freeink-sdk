@@ -48,6 +48,40 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   return n;
 }
 
+// One resumable session (TLS 1.3 ticket or TLS 1.2 session ID) for the last
+// host:port. OPDS browsing hits one server again and again; resuming skips
+// the certificate exchange and verify on every request after the first. A
+// connection takes the session out of the slot, so two concurrent connections
+// never share one; the one that closes last puts its session back.
+struct ResumeSlot {
+  WOLFSSL_SESSION* session = nullptr;
+  uint16_t port = 0;
+  char host[64] = {};
+};
+ResumeSlot resumeSlot;
+portMUX_TYPE resumeMux = portMUX_INITIALIZER_UNLOCKED;
+
+WOLFSSL_SESSION* takeResumable(const char* host, const uint16_t port) {
+  WOLFSSL_SESSION* session = nullptr;
+  taskENTER_CRITICAL(&resumeMux);
+  if (resumeSlot.session && resumeSlot.port == port && strcmp(resumeSlot.host, host) == 0) {
+    session = resumeSlot.session;
+    resumeSlot.session = nullptr;
+  }
+  taskEXIT_CRITICAL(&resumeMux);
+  return session;
+}
+
+void putResumable(WOLFSSL_SESSION* session, const char* host, const uint16_t port) {
+  taskENTER_CRITICAL(&resumeMux);
+  WOLFSSL_SESSION* old = resumeSlot.session;
+  resumeSlot.session = session;
+  resumeSlot.port = port;
+  strlcpy(resumeSlot.host, host, sizeof(resumeSlot.host));
+  taskEXIT_CRITICAL(&resumeMux);
+  if (old) wolfSSL_SESSION_free(old);  // outside the critical section: it frees heap
+}
+
 bool isWantIo(const int err) {
   // Only the wolfSSL_get_error() codes. The WOLFSSL_CBIO_ERR_* callback return
   // codes never come out of wolfSSL_get_error and collide with fatal wolfCrypt
@@ -108,6 +142,19 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+  const size_t hostLen = strlen(host);
+  if (hostLen < sizeof(_host)) {
+    memcpy(_host, host, hostLen + 1);
+    _port = port;
+    if (WOLFSSL_SESSION* resume = takeResumable(host, port)) {
+      // ssl takes its own reference; a rejected or expired session just means
+      // a full handshake.
+      wolfSSL_set_session(ssl, resume);
+      wolfSSL_SESSION_free(resume);
+    }
+  } else {
+    _host[0] = '\0';
+  }
 #if defined(WOLFSSL_TLS13) && defined(HAVE_CURVE25519)
   // MEMFIX-PORT: pin the TLS 1.3 key_share to X25519. wolfSSL's default is a
   // P-256 share, generated with fast-math bignums that WOLFSSL_SMALL_STACK
@@ -154,8 +201,9 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
     delay(5);
   }
   _connected = true;
-  LOG_DBG("TLS", "Handshake ok (%s): %s / %s in %lu ms", label, wolfSSL_get_version(ssl), wolfSSL_get_cipher(ssl),
-          (unsigned long)(millis() - started));
+  _handshakeOk = true;
+  LOG_DBG("TLS", "Handshake ok (%s): %s / %s in %lu ms resumed=%d", label, wolfSSL_get_version(ssl),
+          wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started), wolfSSL_session_reused(ssl));
   return 1;
 }
 
@@ -225,6 +273,17 @@ int SecureClient::available() {
 }
 
 void SecureClient::stop() {
+  if (_ssl && _handshakeOk && !_readFailed && _host[0] != '\0') {
+    // Taken at close so a TLS 1.3 ticket that arrived after the handshake is in it.
+    auto* ssl = static_cast<WOLFSSL*>(_ssl);
+    WOLFSSL_SESSION* session = wolfSSL_get1_session(ssl);
+    if (session && wolfSSL_SessionIsSetup(session)) {
+      putResumable(session, _host, _port);
+    } else if (session) {
+      wolfSSL_SESSION_free(session);
+    }
+  }
+  _handshakeOk = false;
   if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
   if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
   _transport.stop();

@@ -93,6 +93,9 @@ class SecureClient : public Client {
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;
   bool _readFailed = false;
+  bool _handshakeOk = false;  // this connection may hand its session on
+  uint16_t _port = 0;
+  char _host[64] = {};  // resumption key; longer hosts never resume
 };
 
 }  // namespace freeink
