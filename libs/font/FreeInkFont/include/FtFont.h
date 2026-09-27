@@ -33,6 +33,8 @@ typedef struct FT_FaceRec_* FtFaceHandle;
 namespace freeink {
 namespace font {
 
+class FtLibrary;
+
 class FtFont : public RasterFont {
  public:
   using GlyphId = uint32_t;
@@ -73,6 +75,14 @@ class FtFont : public RasterFont {
     void* (*reallocate)(void* context, void* block, size_t oldSize, size_t newSize) = nullptr;
   };
   static bool configureMemory(const MemoryCallbacks* callbacks);
+
+  // Binds this font to a separate FreeType library (its own allocator and its
+  // own library-global properties). FreeType is not thread-safe per library,
+  // so fonts on different libraries may be used from different tasks at the
+  // same time; fonts sharing a library still need the caller's lock. Closes
+  // any open face first. nullptr selects the shared default library.
+  void setLibrary(FtLibrary* library);
+  FtLibrary* library() const { return library_; }
 
   FtFont() = default;
   ~FtFont();
@@ -237,6 +247,9 @@ class FtFont : public RasterFont {
   const uint8_t* expandMonoCoverage(const void* ftBitmap);
   void freeMonoBuffer();
 
+  FtLibrary& lib() const;
+
+  FtLibrary* library_ = nullptr;  // nullptr: the shared default library
   FtFaceHandle face_ = nullptr;
   void* stream_ = nullptr;     // FT_StreamRec* for the streamed path (owned)
   void* streamCtx_ = nullptr;  // {ReadFn, ctx} for the streamed path (owned)
@@ -289,6 +302,36 @@ class FtFont : public RasterFont {
   bool gposLoadAttempted_ = false;
   size_t gposByteBudget_ = kMaxGsubBytes;
   void freeGposTable();
+};
+
+// An independent FreeType library instance. The shared default one serves
+// every FtFont without setLibrary() and is configured by
+// FtFont::configureMemory(). A second instance lets another task rasterize
+// without contending for the first library's lock. Destroy it only after
+// every font bound to it has been deinit()'d.
+class FtLibrary {
+ public:
+  FtLibrary() = default;
+  ~FtLibrary();
+  FtLibrary(const FtLibrary&) = delete;
+  FtLibrary& operator=(const FtLibrary&) = delete;
+
+  // Same contract as FtFont::configureMemory(), for this instance only.
+  bool configureMemory(const FtFont::MemoryCallbacks* callbacks);
+  bool started() const { return lib_ != nullptr; }
+
+  // The configured allocator (or the platform default).
+  void* allocate(size_t size);
+  void deallocate(void* block);
+  void* reallocate(void* block, size_t oldSize, size_t newSize);
+
+ private:
+  friend class FtFont;
+  bool ensure(int* error = nullptr);
+
+  FtFont::MemoryCallbacks callbacks_{};
+  FtLibraryHandle lib_ = nullptr;
+  void* memory_ = nullptr;  // FT_MemoryRec_, allocated through callbacks_
 };
 
 }  // namespace font
