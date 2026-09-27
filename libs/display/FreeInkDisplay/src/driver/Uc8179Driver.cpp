@@ -209,15 +209,28 @@ void Uc8179Driver::initController(EpdBus& bus) {
   _absoluteGrayPlanes = false;
 }
 
+// Switching to direct gray with the panel still powered skips the POF, reset
+// and the PON the gray refresh would then need (~210 ms per direct-gray image
+// in the .67 serial log). The gray power/PLL registers below then load while
+// the charge pumps run. Bench-check the gray levels of a direct-gray image;
+// false restores the OEM power cycle.
+constexpr bool kDirectGrayKeepPower = true;
+
 void Uc8179Driver::configureDirectGrayscale(EpdBus &bus) {
   if (_directGrayConfigured)
     return;
-  if (_isScreenOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_direct_setup_POF");
+  const bool keepPower = kDirectGrayKeepPower && _isScreenOn;
+  if (keepPower) {
+    bus.waitBusy(" 8179_direct_setup_ready");  // no register writes mid-refresh
+  } else {
+    if (_isScreenOn) {
+      bus.cmd(CMD_POWER_OFF);
+      bus.waitBusy(" 8179_direct_setup_POF");
+    }
+    bus.reset(50);
   }
-  bus.reset(50);
   initController(bus);
+  _isScreenOn = keepPower;  // initController() assumes a freshly reset controller
   // OEM gray_full packet loader (FUN_4214d79c), with the panel's PSR/SHL.
   const auto *config = kUc8179DirectGrayConfig;
   bus.cmd(0x52);
