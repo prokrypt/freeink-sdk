@@ -204,6 +204,14 @@ class PanelDriver {
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // The panel still shows `frame` (a software restart kept it). Differential
+  // drivers load it as the previous frame so the first refresh can be Fast.
+  // False when the driver cannot use it.
+  virtual bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
+    (void)bus;
+    (void)frame;
+    return false;
+  }
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a
   // dark background the residue of every white->black transition parks in the

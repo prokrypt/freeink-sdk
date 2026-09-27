@@ -1000,6 +1000,11 @@ void FreeInkDisplay::skipInitialResync() {
   if (_driver) _driver->skipInitialResync();
 }
 
+bool FreeInkDisplay::seedDisplayedFrame(const uint8_t* frame) {
+  syncPendingAsync();
+  return _driver && frame && _driver->seedDisplayedFrame(_bus, frame);
+}
+
 void FreeInkDisplay::beginDisplayWork() {
   if (_driver) _driver->beginDisplayWork();
 }

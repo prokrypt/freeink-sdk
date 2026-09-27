@@ -74,6 +74,7 @@ class Uc8179Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
+  bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
 
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them

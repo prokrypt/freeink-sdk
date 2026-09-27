@@ -575,6 +575,19 @@ void Uc8179Driver::requestResync(uint8_t settlePasses) {
 
 void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
 
+// After a software restart the panel still shows the last frame, but begin()
+// reset the controller. Loading that frame as the OLD plane lets the first
+// refresh run the fast differential waveform instead of a full GC flash.
+bool Uc8179Driver::seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
+  if (_directGrayConfigured) return false;
+  bus.waitBusy(" 8179_seed");
+  streamPlane(bus, CMD_DTM1, frame);
+  _oldPlaneValid = true;
+  _needFullClear = false;
+  _bwPlanesSynced = false;
+  return true;
+}
+
 void Uc8179Driver::deepSleep(EpdBus& bus) {
   syncStaleOldPlane(bus);
   _directGrayOnPanel = false;
