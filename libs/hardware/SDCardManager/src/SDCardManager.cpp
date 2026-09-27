@@ -1,6 +1,7 @@
 #include "SDCardManager.h"
 
 #include <BoardConfig.h>
+#include <Logging.h>
 #include <driver/gpio.h>
 #include <esp_task_wdt.h>
 #include <SPI.h>
@@ -41,25 +42,25 @@ bool SDCardManager::begin() {
   } else {
     _dev = new (std::nothrow) freeink::SdmmcBlockDevice();
     if (!_dev) {
-      if (Serial) Serial.printf("[%lu] [SD] SDMMC block-device allocation failed\n", millis());
+      LOG_ERR("SD", "SDMMC block-device allocation failed");
       return false;
     }
   }
   if (!_dev->begin(BoardConfig::ACTIVE.sdmmc)) {
-    if (Serial) Serial.printf("[%lu] [SD] SDMMC init failed\n", millis());
+    LOG_ERR("SD", "SDMMC init failed");
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
     return false;
   }
   if (!_vol.begin(_dev)) {
-    if (Serial) Serial.printf("[%lu] [SD] SDMMC volume mount failed\n", millis());
+    LOG_ERR("SD", "SDMMC volume mount failed");
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
     return false;
   }
-  if (Serial) Serial.printf("[%lu] [SD] SDMMC card mounted\n", millis());
+  LOG_INF("SD", "SDMMC card mounted");
   initialized = true;
   cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
   cachedUsedBytesValid = false;
@@ -110,7 +111,7 @@ bool SDCardManager::begin() {
   // dormant — bail out before any pin is touched, or SdFat drives "pin 255" and
   // floods the log. (Native-SDMMC boards like the X4 Pro take the #if branch above.)
   if (BoardConfig::ACTIVE.sd.cs < 0) {
-    if (Serial) Serial.printf("[%lu] [SD] SD disabled: CS unassigned in the %s profile\n", millis(), BoardConfig::ACTIVE.name);
+    LOG_ERR("SD", "SD disabled: CS unassigned in the %s profile", BoardConfig::ACTIVE.name);
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
@@ -182,15 +183,13 @@ bool SDCardManager::begin() {
 #endif
 
   if (!cardReady) {
-    if (Serial)
-      Serial.printf("[%lu] [SD] SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)\n",
-                    millis(), sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK,
-                    SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
+    LOG_ERR("SD", "SD card not detected (err=0x%02X data=0x%02X cs=%d sclk=%d miso=%d mosi=%d clk=%luHz)",
+            sd.sdErrorCode(), sd.sdErrorData(), SD_CS, SD_SCLK, SD_MISO, SD_MOSI, (unsigned long)SPI_FQ);
     initialized = false;
     cachedTotalBytes = 0;
     cachedUsedBytesValid = false;
   } else {
-    if (Serial) Serial.printf("[%lu] [SD] SD card detected\n", millis());
+    LOG_INF("SD", "SD card detected");
     initialized = true;
     cachedTotalBytes = static_cast<uint64_t>(vol().clusterCount()) * vol().bytesPerCluster();
     cachedUsedBytesValid = false;
@@ -245,17 +244,17 @@ bool SDCardManager::ready() const {
 std::vector<String> SDCardManager::listFiles(const char* path, const int maxFiles) {
   std::vector<String> ret;
   if (!initialized) {
-    if (Serial) Serial.printf("[%lu] [SD] not initialized, returning empty list\n", millis());
+    LOG_ERR("SD", "not initialized, returning empty list");
     return ret;
   }
 
   auto root = vol().open(path);
   if (!root) {
-    if (Serial) Serial.printf("[%lu] [SD] Failed to open directory\n", millis());
+    LOG_ERR("SD", "Failed to open directory");
     return ret;
   }
   if (!root.isDirectory()) {
-    if (Serial) Serial.printf("[%lu] [SD] Path is not a directory\n", millis());
+    LOG_ERR("SD", "Path is not a directory");
     root.close();
     return ret;
   }
@@ -278,7 +277,7 @@ std::vector<String> SDCardManager::listFiles(const char* path, const int maxFile
 
 String SDCardManager::readFile(const char* path) {
   if (!initialized) {
-    if (Serial) Serial.printf("[%lu] [SD] not initialized; cannot read file\n", millis());
+    LOG_ERR("SD", "not initialized; cannot read file");
     return {""};
   }
 
@@ -301,7 +300,7 @@ String SDCardManager::readFile(const char* path) {
 
 bool SDCardManager::readFileToStream(const char* path, Print& out, const size_t chunkSize) {
   if (!initialized) {
-    if (Serial) Serial.println("SDCardManager: not initialized; cannot read file");
+    LOG_ERR("SD", "not initialized; cannot read file");
     return false;
   }
 
@@ -356,7 +355,7 @@ size_t SDCardManager::readFileToBuffer(const char* path, char* buffer, const siz
   if (!buffer || bufferSize == 0)
     return 0;
   if (!initialized) {
-    if (Serial) Serial.println("SDCardManager: not initialized; cannot read file");
+    LOG_ERR("SD", "not initialized; cannot read file");
     buffer[0] = '\0';
     return 0;
   }
@@ -389,7 +388,7 @@ size_t SDCardManager::readFileToBuffer(const char* path, char* buffer, const siz
 
 bool SDCardManager::writeFile(const char* path, const String& content) {
   if (!initialized) {
-    if (Serial) Serial.println("SDCardManager: not initialized; cannot write file");
+    LOG_ERR("SD", "not initialized; cannot write file");
     return false;
   }
 
@@ -399,7 +398,7 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
 
   FsFile f;
   if (!openFileForWrite("SD", path, f)) {
-    if (Serial) Serial.printf("Failed to open file for write: %s\n", path);
+    LOG_ERR("SD", "Failed to open file for write: %s", path);
     return false;
   }
 
@@ -410,7 +409,7 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
 
 bool SDCardManager::ensureDirectoryExists(const char* path) {
   if (!initialized) {
-    if (Serial) Serial.println("SDCardManager: not initialized; cannot create directory");
+    LOG_ERR("SD", "not initialized; cannot create directory");
     return false;
   }
 
@@ -426,14 +425,14 @@ bool SDCardManager::ensureDirectoryExists(const char* path) {
   if (vol().mkdir(path)) {
     return true;
   }
-  if (Serial) Serial.printf("Failed to create directory: %s\n", path);
+  LOG_ERR("SD", "Failed to create directory: %s", path);
   return false;
 }
 
 bool SDCardManager::openFileForRead(const char* moduleName, const char* path, FsFile& file) {
   file = vol().open(path, O_RDONLY);
   if (!file) {
-    if (Serial) Serial.printf("[%lu] [%s] Failed to open file for reading: %s\n", millis(), moduleName, path);
+    LOG_DBG("SD", "%s: open for read failed: %s", moduleName, path);
     return false;
   }
   return true;
@@ -450,7 +449,7 @@ bool SDCardManager::openFileForRead(const char* moduleName, const String& path, 
 bool SDCardManager::openFileForWrite(const char* moduleName, const char* path, FsFile& file) {
   file = vol().open(path, O_RDWR | O_CREAT | O_TRUNC);
   if (!file) {
-    if (Serial) Serial.printf("[%lu] [%s] Failed to open file for writing: %s\n", millis(), moduleName, path);
+    LOG_ERR("SD", "%s: open for write failed: %s", moduleName, path);
     return false;
   }
   return true;
