@@ -513,9 +513,13 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
   if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
 }
 
-void InputManager::update() {
-  const unsigned long currentTime = millis();
+bool InputManager::hasOneShotEvents() const {
+  return pressedEvents != 0 || releasedEvents != 0 || touchPressedEvent || touchReleasedEvent || touchLongPressEvent ||
+         multiTouchSwipeEvent || multiTouchRotationEvent || multiTouchPinchEvent || touchHomeKeyEvent ||
+         touchHomeKeyTapEvent || touchHomeKeyLongEvent;
+}
 
+void InputManager::clearOneShotEvents() {
   pressedEvents = 0;
   releasedEvents = 0;
   touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
@@ -527,6 +531,12 @@ void InputManager::update() {
   touchHomeKeyEvent = false;
   touchHomeKeyTapEvent = false;
   touchHomeKeyLongEvent = false;
+}
+
+void InputManager::update() {
+  const unsigned long currentTime = millis();
+
+  clearOneShotEvents();
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);

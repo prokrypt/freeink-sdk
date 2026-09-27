@@ -52,6 +52,14 @@ class InputManager {
   // is dropped.
   bool isDebouncePending() const { return lastState != currentState; }
 
+  // True when the last update() produced a one-shot event: a button press or
+  // release edge, a touch press/release/long press, a multi-touch gesture or a
+  // Home key edge. Taps and swipes derive from the touch release edge.
+  bool hasOneShotEvents() const;
+  // Clears the one-shot events of the last update() and keeps held state, so a
+  // copy of this object can stand for "nothing new since".
+  void clearOneShotEvents();
+
   // Duration between the first button press and final release.
   unsigned long getHeldTime() const;
 
