@@ -1,4 +1,5 @@
 #include "EpdBus.h"
+#include <Logging.h>
 
 #include <BoardConfig.h>
 #include <driver/gpio.h>
@@ -306,9 +307,7 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
-  if (tag && Serial) {
-    Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
-  }
+  if (tag) LOG_DBG("EPD", "Wait complete:%s (%lu ms)", tag, millis() - start);
 }
 
 void EpdBus::waitRefreshComplete(const char* tag) {
@@ -388,9 +387,7 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 
   detachInterrupt(digitalPinToInterrupt(_pins.busy));
-  if (tag && Serial) {
-    Serial.printf("[%lu]   Wait complete: %s (%lu ms)\n", millis(), tag, millis() - start);
-  }
+  if (tag) LOG_DBG("EPD", "Wait complete:%s (%lu ms)", tag, millis() - start);
 }
 
 void EpdBus::sendPlaneFlipped(uint8_t ramCmd, const uint8_t* plane, uint16_t height, uint16_t widthBytes) {
