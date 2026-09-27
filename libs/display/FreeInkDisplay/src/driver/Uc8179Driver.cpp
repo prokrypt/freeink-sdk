@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <BoardConfig.h>
+#include <Logging.h>
 #if defined(BOARD_HAS_PSRAM)
 #include <esp_heap_caps.h>
 #endif
@@ -385,6 +386,7 @@ bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, Ref
 void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, bool invert) {
   const uint16_t wb = _wb;
   const uint16_t h = _h;
+  const uint32_t startUs = micros();
   bus.cmd(ramCmd);
   bus.beginTxn();
   streamRows(bus, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
@@ -396,11 +398,14 @@ void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, b
     }
   });
   bus.endTxn();
+  _spiUs += micros() - startUs;
+  _spiPlanes++;
 }
 
 void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs) {
   const uint16_t wb = _wb;
   const uint16_t h = _h;
+  const uint32_t startUs = micros();
   bus.cmd(ramCmd);
   bus.beginTxn();
   streamRows(bus, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
@@ -408,6 +413,8 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
     for (uint16_t x = 0; x < wb; x++) dst[x] = static_cast<uint8_t>(lhs[offset + x] ^ rhs[offset + x]);
   });
   bus.endTxn();
+  _spiUs += micros() - startUs;
+  _spiPlanes++;
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -480,6 +487,13 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   return true;
 }
 
+void Uc8179Driver::logSpiBeforeDrf(const char* kind) {
+  LOG_DBG("EPD", "SPI %s: %u planes %lu ms", kind, static_cast<unsigned>(_spiPlanes),
+          static_cast<unsigned long>(_spiUs / 1000));
+  _spiUs = 0;
+  _spiPlanes = 0;
+}
+
 void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // --- Refresh setup (exact OEM order) -----------------------------------------
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
@@ -508,6 +522,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   }
 
   if (fast) bus.cmd(CMD_PARTIAL_IN);  // PTIN — whole-panel partial (no 0x90 window)
+  logSpiBeforeDrf(fast ? "fast" : "full");
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform started (BUSY dropped) before returning, so
   // displayFinish() only rides out the completion edge.
@@ -642,6 +657,7 @@ bool Uc8179Driver::startGrayscalePrecondition(EpdBus& bus) {
     bus.waitBusy(" 8179_gray_pre_PON");
     _isScreenOn = true;
   }
+  logSpiBeforeDrf("gray_pre");
   bus.cmd(CMD_DISPLAY_REFRESH);
   // Confirm the waveform started (BUSY dropped) before returning, as
   // startBwRefresh() does, so a deferred finish only rides out completion.
@@ -781,6 +797,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       bus.waitBusy(" 8179_direct_PON");
       _isScreenOn = true;
     }
+    logSpiBeforeDrf("direct_gray");
     bus.cmd(CMD_DISPLAY_REFRESH);
     bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
     _directGrayOnPanel = true;
@@ -835,6 +852,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     bus.waitBusy(" 8179_gray_PON");
     _isScreenOn = true;
   }
+  logSpiBeforeDrf("gray");
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_gray_split_DRF");
   if (slowerImageWaveform) {

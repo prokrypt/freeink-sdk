@@ -118,6 +118,9 @@ class Uc8179Driver : public PanelDriver {
   // Stream lhs XOR rhs with the same orientation and white gate padding. Used
   // to translate CrossPoint's MSB transition mask into stock absolute plane1.
   void streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs);
+  // Debug log: SPI time spent streaming planes since the last DRF, printed as
+  // each refresh starts so a refresh splits into SPI upload vs waveform.
+  void logSpiBeforeDrf(const char* kind);
   // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.
@@ -159,6 +162,8 @@ class Uc8179Driver : public PanelDriver {
   bool _directGrayOnPanel = false;
   bool _directGrayConfigured = false;
   uint8_t _directGrayPlanes = 0;
+  uint32_t _spiUs = 0;
+  uint8_t _spiPlanes = 0;
 
   bool _isScreenOn = false;
   // Force the first refresh after begin() to a full flash, so a partial update
