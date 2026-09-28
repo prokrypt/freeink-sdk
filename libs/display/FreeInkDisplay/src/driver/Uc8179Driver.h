@@ -122,6 +122,7 @@ class Uc8179Driver : public PanelDriver {
   // Debug log: SPI time spent streaming planes since the last DRF, printed as
   // each refresh starts so a refresh splits into SPI upload vs waveform.
   void logSpiBeforeDrf(const char* kind);
+  void samplePanelTemperature(EpdBus& bus);
   // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.

@@ -73,6 +73,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   _spiHz = spiHz;
   _busy = busy;
   _coCs = coCs;
+  _spiMiso = spiMiso;
   _spi = SPISettings(spiHz, MSBFIRST, SPI_MODE0);
 
   // One-shot semaphore backing waitRefreshComplete()'s ISR wait (created once).
@@ -188,6 +189,33 @@ void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
 void EpdBus::cmdData2(uint8_t c, uint8_t d0, uint8_t d1) {
   const uint8_t d[2] = {d0, d1};
   cmdData(c, d, 2);
+}
+
+bool EpdBus::readData(uint8_t* out, uint8_t len) {
+  if (_coCs >= 0 || _pins.mosi < 0 || _pins.sclk < 0 || _pins.cs < 0 || _pins.dc < 0) return false;
+  SPI.end();
+  pinMode(_pins.mosi, INPUT);
+  pinMode(_pins.sclk, OUTPUT);
+  digitalWrite(_pins.sclk, LOW);
+  digitalWrite(_pins.dc, HIGH);
+  for (uint8_t i = 0; i < len; ++i) {
+    // The MSB is on SDA after the CS falling edge; each SCL falling edge shifts
+    // out the next bit, so sample while SCL is high (read cycle >= 150 ns).
+    digitalWrite(_pins.cs, LOW);
+    delayMicroseconds(1);
+    uint8_t value = 0;
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      digitalWrite(_pins.sclk, HIGH);
+      delayMicroseconds(1);
+      value = static_cast<uint8_t>((value << 1) | (digitalRead(_pins.mosi) == HIGH ? 1 : 0));
+      digitalWrite(_pins.sclk, LOW);
+      delayMicroseconds(1);
+    }
+    digitalWrite(_pins.cs, HIGH);
+    out[i] = value;
+  }
+  SPI.begin(_pins.sclk, _spiMiso, _pins.mosi, _pins.cs);
+  return true;
 }
 
 void EpdBus::beginTxn() {

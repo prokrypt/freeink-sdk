@@ -108,6 +108,12 @@ class EpdBus {
   // widthBytes), as one CS-low burst. No framebuffer touched.
   void fillPlane(uint8_t ramCmd, uint8_t fillByte, uint16_t height, uint16_t widthBytes);
 
+  // Bit-banged read of `len` bytes after a read command (4-wire mode: the
+  // controller drives SDA, i.e. the MOSI pin, while DC is high). Releases and
+  // re-attaches the SPI peripheral around the read, so it refuses (false) on a
+  // bus shared with another chip-select. One CS pulse per byte (datasheet).
+  bool readData(uint8_t* out, uint8_t len);
+
   const EpdPins& pins() const { return _pins; }
   uint32_t spiHz() const { return _spiHz; }
   BusyPolarity busyPolarity() const { return _busy; }
@@ -133,6 +139,7 @@ class EpdBus {
   BusyPolarity _busy = BusyPolarity::ActiveHigh;
   uint32_t _spiHz = 40000000;
   int8_t _coCs = -1;
+  int8_t _spiMiso = -1;
 };
 
 }  // namespace freeink
