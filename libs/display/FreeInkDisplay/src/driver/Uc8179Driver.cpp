@@ -541,11 +541,18 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus) {
   gPanelTempTryMs = now;
   // TSE (R41h) stays at its power-on default (internal sensor, no offset), so
   // the first data byte is TS[7:0]: signed whole degrees C (datasheet R40h).
-  // TSSET still forces the waveform temperature; this only reads the sensor.
+  // CCSET TSFIX=1 makes the chip report the forced TSSET value instead of the
+  // sensor (RE0h), so clear it for the read only. Gray refreshes do not rewrite
+  // CCSET, so it is restored before returning.
+  bus.cmd(CMD_CCSET);
+  bus.data(static_cast<uint8_t>(_cfg.ccset & ~0x02));
   bus.cmd(CMD_TSC);
   bus.waitBusy(" 8179_TSC");
   uint8_t raw = 0;
-  if (!bus.readData(&raw, 1)) {
+  const bool read = bus.readData(&raw, 1);
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);
+  if (!read) {
     LOG_DBG("EPD", "8179 TSC read skipped (shared SPI bus)");
     return;
   }
