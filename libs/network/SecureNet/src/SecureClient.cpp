@@ -1,5 +1,7 @@
 #include "SecureClient.h"
 
+#include <Logging.h>
+
 // wolfSSL is only pulled in when explicitly enabled. This keeps the default SDK
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
@@ -71,7 +73,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   if (abortRequested()) return 0;
   _transport.setConnectionTimeout(timeoutMs);
   if (!_transport.connect(host, port)) {
-    if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    LOG_ERR("TLS", "TCP connect failed (%s): %s:%u", label, host, port);
     return 0;
   }
   if (abortRequested()) {
@@ -81,7 +83,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 
   auto* ctx = wolfSSL_CTX_new(static_cast<WOLFSSL_METHOD*>(method));
   if (!ctx) {
-    if (Serial) Serial.printf("[SecureClient] CTX alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    LOG_ERR("TLS", "CTX alloc failed (%s), free heap %u", label, (unsigned)ESP.getFreeHeap());
     _transport.stop();
     return 0;
   }
@@ -98,7 +100,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 
   auto* ssl = wolfSSL_new(ctx);
   if (!ssl) {
-    if (Serial) Serial.printf("[SecureClient] SSL alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    LOG_ERR("TLS", "SSL alloc failed (%s), free heap %u", label, (unsigned)ESP.getFreeHeap());
     stop();
     return 0;
   }
@@ -134,30 +136,26 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
     if (!isWantIo(err)) {
-      if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
+      LOG_ERR("TLS", "wolfSSL_connect failed (%s): %d", label, err);
       stop();
       return 0;
     }
     if (abortRequested()) {
-      if (Serial) Serial.printf("[SecureClient] handshake aborted by caller (%s)\n", label);
+      LOG_INF("TLS", "handshake aborted by caller (%s)", label);
       stop();
       return 0;
     }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
-      if (Serial) {
-        Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
-                      _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
-      }
+      LOG_ERR("TLS", "handshake timeout (%s): last err %d, transport %s, free heap %u", label, err,
+              _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
       stop();
       return 0;
     }
     delay(5);
   }
   _connected = true;
-  if (Serial) {
-    Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
-                  wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started));
-  }
+  LOG_DBG("TLS", "Handshake ok (%s): %s / %s in %lu ms", label, wolfSSL_get_version(ssl), wolfSSL_get_cipher(ssl),
+          (unsigned long)(millis() - started));
   return 1;
 }
 
@@ -180,7 +178,7 @@ int SecureClient::connect(const char* host, uint16_t port) {
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
   // TLS 1.2 ClientHello before giving up.
-  if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
+  LOG_INF("TLS", "retrying with TLS 1.2-only handshake");
   return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2");
 }
 
@@ -214,10 +212,8 @@ int SecureClient::read(uint8_t* buf, size_t size) {
   // A mid-stream failure is invisible to callers (they just see the connection
   // die); the error code distinguishes an OOM (MEMORY_E -125) from a peer
   // drop or MAC failure.
-  if (Serial) {
-    Serial.printf("[SecureClient] read failed: %d, free heap %u, max block %u\n", err, (unsigned)ESP.getFreeHeap(),
-                  (unsigned)ESP.getMaxAllocHeap());
-  }
+  LOG_ERR("TLS", "read failed: %d, free heap %u, max block %u", err, (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
   _connected = false;
   _readFailed = true;
   return -1;
@@ -241,7 +237,7 @@ uint8_t SecureClient::connected() { return _connected && _transport.connected();
 
 int SecureClient::connect(const char* host, uint16_t port) {
   (void)host; (void)port;
-  if (Serial) Serial.println("[SecureClient] TLS 1.3 unavailable: build with -DFREEINK_NET_WOLFSSL=1");
+  LOG_ERR("TLS", "TLS 1.3 unavailable: build with -DFREEINK_NET_WOLFSSL=1");
   return 0;
 }
 int SecureClient::connect(IPAddress ip, uint16_t port) { (void)ip; (void)port; return 0; }

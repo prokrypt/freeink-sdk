@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <BoardConfig.h>
+#include <Logging.h>
 #if defined(BOARD_HAS_PSRAM)
 #include <esp_heap_caps.h>
 #endif
@@ -67,6 +68,7 @@ constexpr uint8_t CMD_GATE_SOURCE_START = 0x65;   // GSST (4 data bytes)
 constexpr uint8_t CMD_CCSET = 0xE0;               // CCSET (cascade/output enable)
 constexpr uint8_t CMD_GATE_SCAN = 0xE1;           // gate-scan selection
 constexpr uint8_t CMD_POWER_SAVE = 0xE3;          // PWS (VCOM/source line periods)
+constexpr uint8_t CMD_TSC = 0x40;                 // TSC: sense and read the on-chip temperature
 constexpr uint8_t CMD_TSSET = 0xE5;               // TSSET (forced temperature; frame-rate lever)
 
 constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
@@ -114,7 +116,26 @@ const uint8_t kGrayPreBwMid[5][43] = {
     {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x02, 0x04, 0x00, 0x00, 0x01},
     {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x10, 0x02, 0x04, 0x00, 0x00, 0x01},
 };
+#if FREEINK_UC8179_PANEL_TEMP
+// Last on-chip temperature sample, taken after a refresh at most once per
+// PANEL_TEMP_PERIOD_MS (the TSC conversion holds BUSY and the read re-attaches SPI).
+constexpr unsigned long PANEL_TEMP_PERIOD_MS = 60000;
+int8_t gPanelTempC = 0;
+unsigned long gPanelTempMs = 0;
+unsigned long gPanelTempTryMs = 0;
+bool gPanelTempTried = false;
+bool gPanelTempValid = false;
+#endif
 }  // namespace
+
+#if FREEINK_UC8179_PANEL_TEMP
+bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs) {
+  if (!gPanelTempValid) return false;
+  celsius = gPanelTempC;
+  ageMs = static_cast<uint32_t>(millis() - gPanelTempMs);
+  return true;
+}
+#endif
 
 const Uc8179Config& uc8179DefaultConfig() {
   static const Uc8179Config cfg = {
@@ -518,6 +539,36 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   }
 }
 
+#if FREEINK_UC8179_PANEL_TEMP
+void Uc8179Driver::samplePanelTemperature(EpdBus& bus) {
+  const unsigned long now = millis();
+  if (gPanelTempTried && now - gPanelTempTryMs < PANEL_TEMP_PERIOD_MS) return;
+  gPanelTempTried = true;
+  gPanelTempTryMs = now;
+  // TSE (R41h) stays at its power-on default (internal sensor, no offset), so
+  // the first data byte is TS[7:0]: signed whole degrees C (datasheet R40h).
+  // CCSET TSFIX=1 makes the chip report the forced TSSET value instead of the
+  // sensor (RE0h), so clear it for the read only. Gray refreshes do not rewrite
+  // CCSET, so it is restored before returning.
+  bus.cmd(CMD_CCSET);
+  bus.data(static_cast<uint8_t>(_cfg.ccset & ~0x02));
+  bus.cmd(CMD_TSC);
+  bus.waitBusy(" 8179_TSC");
+  uint8_t raw = 0;
+  const bool read = bus.readData(&raw, 1);
+  bus.cmd(CMD_CCSET);
+  bus.data(_cfg.ccset);
+  if (!read) {
+    LOG_DBG("EPD", "8179 TSC read skipped (shared SPI bus)");
+    return;
+  }
+  gPanelTempC = static_cast<int8_t>(raw);
+  gPanelTempMs = now;
+  gPanelTempValid = true;
+  LOG_DBG("EPD", "8179 TSC raw 0x%02X = %d C", raw, static_cast<int>(gPanelTempC));
+}
+#endif
+
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
@@ -542,6 +593,10 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _oldPlaneValid = true;
   _bwPlanesSynced = true;
   _needFullClear = false;
+
+#if FREEINK_UC8179_PANEL_TEMP
+  samplePanelTemperature(bus);
+#endif
 
   if (_pendingTurnOff) {
     bus.cmd(CMD_POWER_OFF);
