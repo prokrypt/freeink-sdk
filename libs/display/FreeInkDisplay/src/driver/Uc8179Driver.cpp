@@ -584,14 +584,10 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus) {
     LOG_DBG("EPD", "8179 TSC read skipped (shared SPI bus)");
     return;
   }
-  const int8_t celsius = static_cast<int8_t>(raw);
-  // The datasheet table spans -25..49 C (R40h); anything outside is a bad read.
-  const bool plausible = celsius >= -25 && celsius <= 60;
-  LOG_DBG("EPD", "8179 TSC raw 0x%02X = %d C%s", raw, static_cast<int>(celsius), plausible ? "" : " (rejected)");
-  if (!plausible) return;
-  gPanelTempC = celsius;
+  gPanelTempC = static_cast<int8_t>(raw);
   gPanelTempMs = now;
   gPanelTempValid = true;
+  LOG_DBG("EPD", "8179 TSC raw 0x%02X = %d C", raw, static_cast<int>(gPanelTempC));
 }
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
