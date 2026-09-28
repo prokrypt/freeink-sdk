@@ -215,6 +215,14 @@ class InputManager {
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
 
+  // Optional test/remote-control hook for touch. While it returns true the
+  // touch controller is not read; the contact it reports (panel-native frame,
+  // normalized 0..1; down == false for no contact) runs through the same tap,
+  // swipe and long-press machinery as a real finger. Called from whichever task
+  // samples input, so the hook must be thread-safe. Default: none.
+  using TouchHook = bool (*)(float& nx, float& ny, bool& down);
+  static void setTouchHook(TouchHook hook) { s_touchHook = hook; }
+
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that
   // expose a "short power click sleeps" option can flip short clicks to POWER.
@@ -287,6 +295,7 @@ class InputManager {
 
  private:
   static ButtonHook s_buttonHook;
+  static TouchHook s_touchHook;
 
   QueueHandle_t _asyncQueue = nullptr;
   QueueHandle_t _asyncTapQueue = nullptr;
@@ -334,6 +343,7 @@ class InputManager {
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw);  // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);    // GT911 polled read
+  bool pollTouchHook(unsigned long now);  // injected contact from s_touchHook
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);

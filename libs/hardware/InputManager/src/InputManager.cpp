@@ -219,6 +219,7 @@ uint8_t InputManager::getState() {
 }
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
+InputManager::TouchHook InputManager::s_touchHook = nullptr;
 
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
@@ -1276,7 +1277,9 @@ uint8_t InputManager::serviceTouch() {
     resetMultiTouchGesture();
   }
 
-  if (t.controller == BoardConfig::TouchController::Gt911) {
+  if (pollTouchHook(now)) {
+    // Injected contact replaced the controller read for this sample.
+  } else if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
   } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
     pollFt5x06(now);
@@ -2171,6 +2174,57 @@ void InputManager::pollFt6336u(const unsigned long now) {
     touchPressed = false;
     touchPoint.valid = false;
   }
+}
+
+bool InputManager::pollTouchHook(const unsigned long now) {
+  float nx = 0.0f;
+  float ny = 0.0f;
+  bool down = false;
+  if (s_touchHook == nullptr || !s_touchHook(nx, ny, down)) return false;
+  if (!down) {
+    touchSnapshot.count = 0;
+    touchSnapshot.reportedCount = 0;
+    touchSnapshot.idsStable = true;
+    updateMultiTouchGesture(touchSnapshot, now);
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+    return true;
+  }
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const auto clamp01 = [](const float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  const float w = (t.rawMaxX > t.rawMinX) ? static_cast<float>(t.rawMaxX - t.rawMinX) : 1.0f;
+  const float h = (t.rawMaxY > t.rawMinY) ? static_cast<float>(t.rawMaxY - t.rawMinY) : 1.0f;
+  touchSnapshot.reportedCount = 1;
+  touchSnapshot.idsStable = true;
+  touchSnapshot.count = 1;
+  touchSnapshot.points[0].id = 0;
+  TouchPoint& point = touchSnapshot.points[0].point;
+  point.valid = true;
+  point.x = static_cast<uint16_t>(clamp01(nx) * w);
+  point.y = static_cast<uint16_t>(clamp01(ny) * h);
+  point.timestamp = now;
+  updateMultiTouchGesture(touchSnapshot, now);
+  touchPoint = point;
+  if (!touchPressed) {
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  }
+  touchUpPoint = touchPoint;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+  if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+    touchMovedBeyondTapReleaseSlop = true;
+  }
+  touchPressed = true;
+  return true;
 }
 
 void InputManager::pollGt911(const unsigned long now) {
