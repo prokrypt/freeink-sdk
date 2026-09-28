@@ -48,6 +48,12 @@ class PanelDriver {
   // --- lifecycle ---
   virtual void begin(EpdBus& bus) = 0;
   virtual void deepSleep(EpdBus& bus) = 0;
+  // Turn the charge pump/booster off between refreshes while the panel keeps
+  // its image; the next refresh powers it back on. True when it switched off.
+  virtual bool powerOffIdle(EpdBus& bus) {
+    (void)bus;
+    return false;
+  }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;

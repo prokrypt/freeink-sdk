@@ -298,6 +298,9 @@ class FreeInkDisplay {
 
   // Power management
   void deepSleep();
+  // Booster off between refreshes (panel keeps its image). Skipped while a
+  // refresh or grayscale pass is pending; true when the panel switched off.
+  bool powerOffIdle();
 
   // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
   // firmware can apply its own power policy (e.g. reduce the CPU clock) for the

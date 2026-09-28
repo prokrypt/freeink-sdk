@@ -560,6 +560,14 @@ void Uc8179Driver::requestResync(uint8_t settlePasses) {
 
 void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
 
+bool Uc8179Driver::powerOffIdle(EpdBus& bus) {
+  if (!_isScreenOn) return false;
+  bus.cmd(CMD_POWER_OFF);  // POF; startBwRefresh() and the gray paths re-send PON
+  bus.waitBusy(" 8179_IDLE_POF");
+  _isScreenOn = false;
+  return true;
+}
+
 void Uc8179Driver::deepSleep(EpdBus& bus) {
   syncStaleOldPlane(bus);
   _directGrayOnPanel = false;
