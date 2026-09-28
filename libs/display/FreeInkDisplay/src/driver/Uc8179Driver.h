@@ -16,6 +16,8 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag). Production waits one RTOS tick
 // and then polls until BUSY_N is HIGH; it does not require observing a LOW edge.
 
+#include <BoardConfig.h>  // FREEINK_UC8179_PANEL_TEMP
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -118,7 +120,9 @@ class Uc8179Driver : public PanelDriver {
   // Stream lhs XOR rhs with the same orientation and white gate padding. Used
   // to translate CrossPoint's MSB transition mask into stock absolute plane1.
   void streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs);
+#if FREEINK_UC8179_PANEL_TEMP
   void samplePanelTemperature(EpdBus& bus);
+#endif
   // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.

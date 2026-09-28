@@ -146,6 +146,16 @@
 #define FREEINK_DRIVER_UC8179 0
 #define FREEINK_DRIVER_UC8279_X4 0
 #endif
+// Sample the UC8179 on-chip temperature after a refresh (TSC conversion plus a
+// bit-banged read, at most once a minute), exposed by uc8179PanelTemperature().
+// S3 only by default so the C3 build carries none of it.
+#ifndef FREEINK_UC8179_PANEL_TEMP
+#if FREEINK_DRIVER_UC8179 && defined(CONFIG_IDF_TARGET_ESP32S3)
+#define FREEINK_UC8179_PANEL_TEMP 1
+#else
+#define FREEINK_UC8179_PANEL_TEMP 0
+#endif
+#endif
 // M5 PaperColor has two interchangeable display backends: the fast hand-rolled
 // ED2208 driver (default), or M5's official M5GFX/M5Unified path (opt in with
 // -DFREEINK_M5_OFFICIAL=1, which pulls the M5 libraries — see platformio.sample).

@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <BoardConfig.h>
+#include <Logging.h>
 #if defined(BOARD_HAS_PSRAM)
 #include <esp_heap_caps.h>
 #endif
@@ -115,6 +116,7 @@ const uint8_t kGrayPreBwMid[5][43] = {
     {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x02, 0x04, 0x00, 0x00, 0x01},
     {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x10, 0x02, 0x04, 0x00, 0x00, 0x01},
 };
+#if FREEINK_UC8179_PANEL_TEMP
 // Last on-chip temperature sample, taken after a refresh at most once per
 // PANEL_TEMP_PERIOD_MS (the TSC conversion holds BUSY and the read re-attaches SPI).
 constexpr unsigned long PANEL_TEMP_PERIOD_MS = 60000;
@@ -123,14 +125,17 @@ unsigned long gPanelTempMs = 0;
 unsigned long gPanelTempTryMs = 0;
 bool gPanelTempTried = false;
 bool gPanelTempValid = false;
+#endif
 }  // namespace
 
+#if FREEINK_UC8179_PANEL_TEMP
 bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs) {
   if (!gPanelTempValid) return false;
   celsius = gPanelTempC;
   ageMs = static_cast<uint32_t>(millis() - gPanelTempMs);
   return true;
 }
+#endif
 
 const Uc8179Config& uc8179DefaultConfig() {
   static const Uc8179Config cfg = {
@@ -534,6 +539,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   }
 }
 
+#if FREEINK_UC8179_PANEL_TEMP
 void Uc8179Driver::samplePanelTemperature(EpdBus& bus) {
   const unsigned long now = millis();
   if (gPanelTempTried && now - gPanelTempTryMs < PANEL_TEMP_PERIOD_MS) return;
@@ -561,6 +567,7 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus) {
   gPanelTempValid = true;
   LOG_DBG("EPD", "8179 TSC raw 0x%02X = %d C", raw, static_cast<int>(gPanelTempC));
 }
+#endif
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
@@ -587,7 +594,9 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   _bwPlanesSynced = true;
   _needFullClear = false;
 
+#if FREEINK_UC8179_PANEL_TEMP
   samplePanelTemperature(bus);
+#endif
 
   if (_pendingTurnOff) {
     bus.cmd(CMD_POWER_OFF);

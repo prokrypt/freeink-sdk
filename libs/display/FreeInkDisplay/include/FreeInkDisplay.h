@@ -499,9 +499,11 @@ class FreeInkDisplay {
 #endif
 };
 
+#if FREEINK_UC8179_PANEL_TEMP
 // Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
 // a refresh at most once a minute; false until the first sample (or on other
 // controllers, which never sample).
 bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs);
+#endif
 
 }  // namespace freeink
