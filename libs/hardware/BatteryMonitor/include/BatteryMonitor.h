@@ -63,6 +63,11 @@ public:
     // Read the battery voltage in volts (accounts for divider)
     double readVolts() const;
 
+    // Fuel-gauge temperature in 0.1 C (BQ27220 internal/NTC, CW2017 TS input).
+    // false when the board has no gauge with a temperature register, or on I2C
+    // failure.
+    bool readTemperatureDeciC(int16_t& out) const;
+
     // True when the battery is actively charging. Sources by backend:
     //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging);
     //     always false when no charge-status pin is configured.

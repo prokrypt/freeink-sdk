@@ -22,6 +22,7 @@
 // the gauge reports true battery state, so no ADC pin or divider is involved.
 // Addresses/pins come from BoardConfig::ACTIVE.batteryGauge.
 namespace {
+constexpr uint8_t BQ27220_TEMPERATURE = 0x06;      // gauge temperature, 0.1 K (u16 LE)
 constexpr uint8_t BQ27220_VOLTAGE = 0x08;          // battery voltage, mV (u16 LE)
 constexpr uint8_t BQ27220_CURRENT = 0x0C;          // average current, signed mA (i16 LE)
 constexpr uint8_t BQ27220_STATE_OF_CHARGE = 0x2C;  // SoC, percent (u16 LE)
@@ -88,6 +89,7 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 constexpr uint8_t CW2017_REG_VERSION = 0x00;    // 0xA0 while starting; running versions match 0x0D/0x0F
 constexpr uint8_t CW2017_REG_VCELL_H = 0x02;    // 14-bit VCELL, big-endian over 0x02/0x03
 constexpr uint8_t CW2017_REG_SOC = 0x04;        // integer percent (0x05 = fraction, unused)
+constexpr uint8_t CW2017_REG_TEMP = 0x06;       // 0.5 C per LSB, -40 C offset (TS/NTC input)
 constexpr uint8_t CW2017_REG_MODE = 0x08;       // soft-reset / sleep control
 constexpr uint8_t CW2017_REG_SOC_ALERT = 0x0B;  // bit7 = profile-loaded / update-enable
 constexpr uint8_t CW2017_REG_BATINFO = 0x10;    // 80-byte profile spans 0x10..0x5F
@@ -267,6 +269,25 @@ bool readGaugeMillivolts(uint16_t& out) {
   if (!readReg16(g.gaugeAddr, BQ27220_VOLTAGE, mv)) return false;
   out = mv;
   return true;
+}
+
+// Gauge temperature in 0.1 C, dispatched by type. false on I2C failure or a
+// gauge type without a temperature register.
+bool readGaugeTemperatureDeciC(int16_t& out) {
+  const auto& g = BoardConfig::ACTIVE.batteryGauge;
+  if (g.gaugeType == BoardConfig::GaugeType::Cw2017) {
+    uint8_t raw = 0;
+    if (!readReg8(g.gaugeAddr, CW2017_REG_TEMP, raw)) return false;
+    out = static_cast<int16_t>(raw * 5 - 400);
+    return true;
+  }
+  if (g.gaugeType == BoardConfig::GaugeType::Bq27220) {
+    uint16_t deciK = 0;
+    if (!readReg16(g.gaugeAddr, BQ27220_TEMPERATURE, deciK)) return false;
+    out = static_cast<int16_t>(static_cast<int32_t>(deciK) - 2731);
+    return true;
+  }
+  return false;
 }
 
 // Charging state for an I2C-gauge board, from the active board's gauge config.
@@ -523,6 +544,14 @@ uint16_t BatteryMonitor::readMillivolts() const {
 
 double BatteryMonitor::readVolts() const {
   return static_cast<double>(readMillivolts()) / 1000.0;
+}
+
+bool BatteryMonitor::readTemperatureDeciC(int16_t& out) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) return readGaugeTemperatureDeciC(out);
+#endif
+  (void)out;
+  return false;
 }
 
 bool BatteryMonitor::isCharging() const {
