@@ -1,6 +1,8 @@
 #include "XmlListParser.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -28,6 +30,58 @@ const char* findAttr(const XML_Char** atts, const std::string& attr) {
   return nullptr;
 }
 
+// Percent-decodes, treating '+' as a space (form encoding, as some servers emit).
+std::string urlDecode(const std::string& s) {
+  const auto hex = [](char c) { return isxdigit(static_cast<unsigned char>(c)); };
+  const auto val = [](char c) { return isdigit(static_cast<unsigned char>(c)) ? c - '0' : (tolower(c) - 'a' + 10); };
+  std::string out;
+  out.reserve(s.size());
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '%' && i + 2 < s.size() && hex(s[i + 1]) && hex(s[i + 2])) {
+      out += static_cast<char>(val(s[i + 1]) << 4 | val(s[i + 2]));
+      i += 2;
+    } else {
+      out += s[i] == '+' ? ' ' : s[i];
+    }
+  }
+  return out;
+}
+
+std::string urlEncodePath(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() * 2);
+  for (const unsigned char c : s) {
+    if (isalnum(c) || strchr("-_.~/", c)) {
+      out += static_cast<char>(c);
+    } else {
+      char buf[4];
+      snprintf(buf, sizeof(buf), "%%%02X", c);
+      out += buf;
+    }
+  }
+  return out;
+}
+
+// Splits scheme://host[:port] from the path ("/" when there is none).
+void splitUrl(const std::string& url, std::string& origin, std::string& path) {
+  const size_t schemeEnd = url.find("://");
+  const size_t hostEnd = url.find('/', schemeEnd == std::string::npos ? 0 : schemeEnd + 3);
+  origin = hostEnd == std::string::npos ? url : url.substr(0, hostEnd);
+  path = hostEnd == std::string::npos ? "/" : url.substr(hostEnd);
+}
+
+std::string trimSlashes(std::string s) {
+  while (s.size() > 1 && s.back() == '/') s.pop_back();
+  return s;
+}
+
+bool endsWithNoCase(const std::string& s, const std::string& suffix) {
+  if (s.size() < suffix.size()) return false;
+  return std::equal(suffix.begin(), suffix.end(), s.end() - suffix.size(), [](char a, char b) {
+    return tolower(static_cast<unsigned char>(a)) == tolower(static_cast<unsigned char>(b));
+  });
+}
+
 void trim(std::string& s) {
   const size_t b = s.find_first_not_of(" \t\r\n");
   if (b == std::string::npos) {
@@ -43,6 +97,32 @@ XmlListParser::XmlListParser(const std::string& itemName, const std::string& con
                              const std::string* const (&selectors)[F_COUNT], const ItemSink sink, void* sinkCtx)
     : item(itemName), container(containerName), sink(sink), sinkCtx(sinkCtx) {
   for (int i = 0; i < F_COUNT; i++) splitSelector(*selectors[i], sel[i].onItemTag, sel[i].elem, sel[i].attr);
+}
+
+void XmlListParser::setUrlOptions(UrlOptions options) {
+  urls = std::move(options);
+  std::string path;
+  splitUrl(urls.requestUrl, origin, path);
+  decodedSelf = trimSlashes(urlDecode(path));
+}
+
+bool XmlListParser::acceptRow(RawItem& row) const {
+  std::string& url = row.field[F_URL];
+  if (url.empty()) return false;
+  const std::string decoded = urlDecode(url);
+  const std::string trimmed = trimSlashes(decoded);
+  if (urls.skipSelf && trimmed == decodedSelf) return false;
+  if (!row.isDir && !urls.extensions.empty() &&
+      std::none_of(urls.extensions.begin(), urls.extensions.end(),
+                   [&](const std::string& ext) { return endsWithNoCase(trimmed, ext); })) {
+    return false;
+  }
+  if (row.field[F_TITLE].empty()) {
+    const size_t slash = trimmed.rfind('/');
+    row.field[F_TITLE] = slash == std::string::npos ? trimmed : trimmed.substr(slash + 1);
+  }
+  if (urls.resolveUrls && url.rfind("http", 0) != 0) url = origin + urlEncodePath(decoded);
+  return true;
 }
 
 bool XmlListParser::parse(const ReadFn read, void* readCtx) {
@@ -111,7 +191,7 @@ void XmlListParser::onEnd(const XML_Char* name) {
     if (depth == itemDepth && item == localName(name)) {
       for (auto& f : current.field) trim(f);
       ++parsedItems;
-      sink(sinkCtx, current);
+      if (acceptRow(current)) sink(sinkCtx, current);
       itemDepth = -1;
     }
   }

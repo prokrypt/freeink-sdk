@@ -25,5 +25,32 @@ int main() {
   XmlListParser q("b", "", sel, [](void*, XmlListParser::RawItem&) {}, nullptr);
   assert(!q.parse([](void* c, char* b, size_t n) { auto* s = static_cast<Src*>(c); size_t k = s->left < n ? s->left : n; memcpy(b, s->p, k); s->p += k; s->left -= k; return (int)k; }, &bad));
   delete p;
+
+  // WebDAV options: skip the listing itself, filter files by extension (not
+  // folders), resolve relative hrefs, fall back to the file name for a title.
+  static const char* kDav =
+      "<d:multistatus xmlns:d=\"DAV:\">"
+      "<d:response><d:href>/My%20Books/</d:href><d:resourcetype><d:collection/></d:resourcetype></d:response>"
+      "<d:response><d:href>/My%20Books/sub/</d:href><d:resourcetype><d:collection/></d:resourcetype></d:response>"
+      "<d:response><d:href>/My%20Books/Caf%C3%A9.EPUB</d:href></d:response>"
+      "<d:response><d:href>/My%20Books/notes.txt</d:href></d:response>"
+      "<d:response><d:displayname></d:displayname></d:response>"
+      "</d:multistatus>";
+  rows.clear();
+  XmlListParser dav("response", "collection", sel,
+      [](void* c, XmlListParser::RawItem& r) { static_cast<std::vector<XmlListParser::RawItem>*>(c)->push_back(r); }, &rows);
+  XmlListParser::UrlOptions urls;
+  urls.requestUrl = "https://dav.example:8443/My%20Books/";
+  urls.skipSelf = true;
+  urls.resolveUrls = true;
+  urls.extensions = {".epub"};
+  dav.setUrlOptions(urls);
+  Src d{kDav, strlen(kDav)};
+  assert(dav.parse([](void* c, char* b, size_t n) { auto* s = static_cast<Src*>(c); size_t k = s->left < n ? s->left : n; memcpy(b, s->p, k); s->p += k; s->left -= k; return (int)k; }, &d));
+  assert(rows.size() == 2);
+  assert(rows[0].isDir && rows[0].field[XmlListParser::F_TITLE] == "sub" &&
+         rows[0].field[XmlListParser::F_URL] == "https://dav.example:8443/My%20Books/sub/");
+  assert(!rows[1].isDir && rows[1].field[XmlListParser::F_TITLE] == "Caf\xC3\xA9.EPUB" &&
+         rows[1].field[XmlListParser::F_URL] == "https://dav.example:8443/My%20Books/Caf%C3%A9.EPUB");
   puts("xmllist ok");
 }
