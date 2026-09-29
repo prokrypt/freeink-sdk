@@ -848,6 +848,12 @@ active `DrawTarget` font asset, so devices shipping wider language support
 should include matching Noto Sans glyph ranges in their generated bitmap font or
 use a renderer with native text shaping.
 
+The Latin locale layouts follow their printed keyboards. QWERTZ German carries
+ä, ö, ü and ß as keys; AZERTY French keeps é as a key and reaches è, ê, à, ç, ù,
+î and ô by long-press, and Spanish reaches its acute vowels the same way. A key
+has a single long-press alternate, so letters beyond one per key (French â, û,
+ë, ï, œ) are not on the built-in layers.
+
 An app that reaches more than one script sets `builtinKeyboardLayout`'s
 `langKey` flag and a `KeyboardProps::langAction`, which puts a script-switch key
 in the bottom row. It draws a globe and takes no label of its own: which layout
