@@ -624,6 +624,7 @@ enum class SelectionStyle : uint8_t {
   LightPill,  // LightGray dither fill, text stays black
   Underline,  // rows keep their normal style; underline marker
   Triangle,   // rows keep their normal style; triangle marker
+  Outline,    // 2 px black border, no fill: few changed pixels, all in lines
 };
 
 // Sentinel for radius props: inherit the theme's shape token. Screen wrappers
