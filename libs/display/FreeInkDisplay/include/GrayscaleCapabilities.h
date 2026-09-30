@@ -2,6 +2,10 @@
 
 #include <stdint.h>
 
+// Defined when that controller's gray (AA) waveform passes the compile-time
+// DC-balance gate. Apps enable AA per controller on these; absent = AA off.
+#define FREEINK_BALANCED_GRAY_SSD1677 1
+
 namespace freeink {
 
 // Overlay uses the existing base + LSB/MSB mask API. Absolute requires planes
