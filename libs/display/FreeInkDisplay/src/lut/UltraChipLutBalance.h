@@ -21,8 +21,8 @@
 // 11 floating. TP = frames, RP = group repeat count.
 //
 // Unit: frames x repeats, VDH = +1, VDL = -1, which assumes |VDH| == |VDL|
-// (UC8179 PWR VDHS == VDLS: 0x3F/0x3F in the direct-gray config, and the
-// OTP/reset values on the B/W path). A pixel's drive is source minus VCOM.
+// (UC8179 PWR VDHS == VDLS: 0x3F/0x3F, which Uc8179Driver loads before every
+// register-LUT refresh). A pixel's drive is source minus VCOM.
 // VDHR has its own amplitude and is rejected rather than guessed. RP=0 is
 // ambiguous between "skip" and "run once", so a group with RP=0 must balance
 // on its own and the rule holds under either reading.
