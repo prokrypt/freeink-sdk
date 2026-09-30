@@ -464,10 +464,12 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // The panel holds direct gray, so no OLD plane is true: drive every pixel to
     // its B/W target with the complement pair on the balanced DU LUT (every row
     // nets zero), not OTP Fast, whose one-way K->W/W->K rows can't be checked.
-    // ponytail: 6 frames per phase is a guess; raise it if gray shows through.
+    // 6 frames per phase left overlays drawn over direct gray visibly gray
+    // (log 20260930T043445Z-ae927686: drawer at 41661). ponytail: 12 is 2x that
+    // guess; tune on the panel if gray still shows or the paint feels slow.
     streamPlane(bus, CMD_DTM1, fb, true);
     streamPlane(bus, CMD_DTM2, fb);
-    _scrubLutFrames = 6;
+    _scrubLutFrames = 12;
     _complementOldPlane = true;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
