@@ -81,22 +81,20 @@ constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separatel
 constexpr uint8_t kDirectGrayOrder[lutbalance::kRows] = {0, 4, 2, 3, 1};
 constexpr lutbalance::LutSet kDirectGraySet = lutbalance::fromRows(kUltraChipDirectGray, kDirectGrayOrder);
 
-// Smooth gray (setSmoothGray): with the B/W base on the panel, every gray
-// pixel sits at black (the base is 0 for every non-white pixel). Instead of
-// the full swing, give it a short push toward black (invisible, it is already
-// there), then the same number of frames toward white: light 4+4, dark 2+2,
-// run twice (RP 1) like the OEM set. Every row nets zero; black and white hold.
-// Canonical row order (VCOM, black, light, dark, white), mapped like direct
-// gray. Levels: 01 VDH -> black, 10 VDL -> white. ponytail: light/dark frame
-// counts copy the final white phase of kUltraChipDirectGray; tune on the panel.
-constexpr uint8_t kSmoothGrayRows[lutbalance::kRows][lutbalance::kRowBytes] = {
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // VCOM: DC
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // black: hold
-    {0x5A, 0x02, 0x02, 0x02, 0x02, 0x01},  // light: black 2, black 2, white 2, white 2
-    {0x18, 0x02, 0x02, 0x02, 0x02, 0x01},  // dark: -, black 2, white 2, -
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // white: hold
-};
-constexpr lutbalance::LutSet kSmoothGraySet = lutbalance::fromRows(kSmoothGrayRows, kDirectGrayOrder);
+// Smooth gray (setSmoothGray): the same set with the white (WW) and black (KK)
+// level bytes grounded, frame counts and repeats kept. The B/W base of the page
+// is on the panel, so black/white pixels hold and only gray pixels swing (no
+// full-screen flash). ponytail: holding keeps what the OTP Fast base left
+// (same ghosting as a B/W page turn); the app turns it off on image pages.
+constexpr lutbalance::LutSet makeDirectGrayHold() {
+  lutbalance::LutSet s = kDirectGraySet;
+  for (size_t g = 0; g < lutbalance::kRowBytes; g += lutbalance::kGroupBytes) {
+    s.row[lutbalance::Ww][g] = 0;
+    s.row[lutbalance::Kk][g] = 0;
+  }
+  return s;
+}
+constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
 
 // Balanced DU register LUT: changing pixels get `frames` away from the target
 // (invisible: they are already there), then `frames` to it, so every row nets
@@ -947,7 +945,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     }
     configureDirectGrayscale(bus);
     if (holdBw && _smoothGray) {
-      writeLutSet(bus, lutbalance::checkedTable<kSmoothGraySet, lutbalance::Policy::Absolute>());
+      writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
     } else {
       writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
