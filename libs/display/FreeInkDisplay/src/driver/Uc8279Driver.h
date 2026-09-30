@@ -56,8 +56,6 @@ class Uc8279Driver : public PanelDriver {
                                   RefreshMode fallback, bool turnOff) override;
   void beginGrayscale(EpdBus &bus, const uint8_t *fb, GrayscaleMode mode,
                             RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
-                             uint16_t h) override;
   GrayscaleCapabilities grayscaleCapabilities(
       GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)

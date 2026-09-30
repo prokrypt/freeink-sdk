@@ -43,7 +43,8 @@ const Uc8253X3Config& uc8253X3DefaultConfig() {
       kUltraChipDirectGray[3], kUltraChipDirectGray[1]};
   static const Uc8253X3Config cfg = {
       {lut_x3_vcom_normal, lut_x3_ww_normal, lut_x3_bw_normal, lut_x3_wb_normal, lut_x3_bb_normal},
-      {lut_x3_vcom_half, lut_x3_ww_half, lut_x3_bw_half, lut_x3_wb_half, lut_x3_bb_half},
+      // Scrub: _full WW row for white targets, _full BB for black (balanced, gated).
+      {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_ww_full, lut_x3_bb_full, lut_x3_bb_full},
       {lut_x3_vcom_fast, lut_x3_ww_fast, lut_x3_bw_fast, lut_x3_wb_fast, lut_x3_bb_fast},
       {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_bw_full, lut_x3_wb_full, lut_x3_bb_full},
       {lut_x3_vcom_gc, lut_x3_ww_gc, lut_x3_bw_gc, lut_x3_wb_gc, lut_x3_bb_gc},
@@ -169,7 +170,6 @@ void Uc8253X3Driver::begin(EpdBus& bus) {
   // which is what the initial forced clean is for.
   _initialFullSyncsRemaining = 1;
   _forceFullSyncNext = false;
-  _forcedConditionPassesNext = 0;
   _inGrayscaleMode = false;
   _grayState = {};
   _absoluteInput = false;
@@ -185,7 +185,6 @@ void Uc8253X3Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev
 
 bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   (void)prev;
-  const bool leavingDirectGray = _directGrayOnPanel;
   _absoluteInput = false;
   _directGrayPass = false;
   if (_directGrayOnPanel) {
@@ -209,24 +208,14 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   const bool doHalfSync = halfMode && !doFullSync;
   _grayState.lastBaseWasPartial = !doFullSync;
 
-  if (leavingDirectGray && doFullSync) {
-    // Establish the destination before the full recovery's visible flash.
-    // HALF pairs WW==BW and WB==BB, making its drive independent of old RAM.
-    loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
-    grayWindowIn(bus);
-    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
-    bus.cmd(CMD_PARTIAL_OUT);
-    triggerRefresh(bus, false, " X3_BW_TARGET_DRF");
-  }
-
   if (doFullSync) {
-    // _full OEM bank from a white DTM1 baseline (no software prev-frame buffer).
-    loadBankCdi(bus, 0x29, 0x07, _cfg.full);
-    bus.fillPlane(CMD_DTM1, 0xFF, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
+    // Balanced scrub (every row nets zero, DTM1 ignored). The _full transition
+    // bank from a white DTM1 seed ran W->K (+24) on every held black each time,
+    // and leaving direct gray needs no separate destination paint before it.
+    loadBankCdi(bus, 0x29, 0x07, _cfg.half);
     bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   } else if (doHalfSync) {
-    // _half scrub: WW==BW, WB==BB -> drive every pixel to target ignoring DTM1.
+    // Balanced scrub: WW==BW, WB==BB -> drive every pixel to target ignoring DTM1.
     loadBankCdi(bus, 0xA9, 0x07, _cfg.half);
     bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   } else {
@@ -278,27 +267,6 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
 
   if (!fastMode) delay(200);
 
-  uint8_t postConditionPasses = 0;
-  if (doFullSync) {
-    if (_forceFullSyncNext) postConditionPasses = _forcedConditionPassesNext;
-    else if (_initialFullSyncsRemaining == 1) postConditionPasses = 1;
-  }
-  if (postConditionPasses > 0) {
-    const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
-    const uint16_t yEnd = static_cast<uint16_t>(_h - 1);
-    const uint8_t w[9] = {0x00, 0x00, static_cast<uint8_t>(xEnd >> 8), static_cast<uint8_t>(xEnd & 0xFF),
-                          0x00, 0x00, static_cast<uint8_t>(yEnd >> 8), static_cast<uint8_t>(yEnd & 0xFF),
-                          0x01};
-    loadBankCdi(bus, 0xA9, 0x07, _cfg.normal);  // _normal: OEM normal loader CDI 0xA9
-    for (uint8_t i = 0; i < postConditionPasses; i++) {
-      bus.cmd(CMD_PARTIAL_IN);
-      bus.cmdData(CMD_PARTIAL_WINDOW, w, 9);
-      bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
-      bus.cmd(CMD_PARTIAL_OUT);
-      triggerRefresh(bus, false);
-    }
-  }
-
   // Sync DTM1 ("old" RAM) with the current frame for the next fast diff.
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
@@ -323,7 +291,6 @@ void Uc8253X3Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
     _initialFullSyncsRemaining--;
   }
   _forceFullSyncNext = false;
-  _forcedConditionPassesNext = 0;
 }
 
 void Uc8253X3Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback,
@@ -348,14 +315,10 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   _directGrayPass = false;
   // OEM V5.6.33 grayscale base update: write the new frame to DTM2 and fire
   // the "AA-pre-BW(mid)" bank as a differential refresh against the old frame
-  // still held in DTM1. Changed pixels get the strong 0xAA/0x55 transition
-  // drives, unchanged pixels the gentle 0x20/0x10 reinforcement -- leaving
-  // the whole region in the calibrated state the gray nudge bank expects.
-  // When the controller state cannot support a clean differential (DTM1
-  // unsynced after AA, boot full-syncs pending, or an explicit resync
-  // request), fall back to the normal display path and follow it with the
-  // settle flavor of the same bank (DTM1 == DTM2 after display()'s post-
-  // refresh sync, so only the gentle WW/BB cells fire).
+  // still held in DTM1 (balanced: changed pixels get the 0xAA/0x55 drives,
+  // holds are GND). When the controller state cannot support a clean
+  // differential (DTM1 unsynced after AA, boot full-syncs pending, or an
+  // explicit resync request), take the normal display path instead.
   if (_inGrayscaleMode) {
     // grayscaleRevert scrubs the panel to white and leaves BOTH DTM planes
     // all-white with _redRamSynced set, so DTM1 matches the displayed state
@@ -370,9 +333,8 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   const bool cleanBaseNeeded =
       !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
   if (cleanBaseNeeded) {
-    display(bus, fb, nullptr, fallback, /*turnOff=*/false);
-    loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-    triggerRefresh(bus, turnOff);
+    // The mid bank's holds are GND, so a settle with DTM1 == DTM2 drives nothing.
+    display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
@@ -383,45 +345,6 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   _redRamSynced = true;
-}
-
-void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  // OEM V5.6.33 "AA-pre-BW(mid)" pass: gentle settle of the displayed BW
-  // frame (DTM1 == DTM2 == frame after display()'s post-refresh DTM1 sync)
-  // that leaves particles receptive to the weak grayscale nudge waveform.
-  // Without it a strong base refresh sets pixels too firmly for the gray
-  // drive to move. Windowed to the gray region via PTL exactly like the OEM
-  // loader (PTIN -> window -> CDI/bank -> refresh -> PTOUT). The PTL Y range
-  // is in GATE space (logical row y lives at gate H-1-y, see
-  // writeGrayscalePlaneStrip); X is byte-aligned outward since PTL horizontal
-  // resolution is 8 pixels.
-  if (w == 0 || h == 0 || x >= _w || y >= _h) return;
-  // The settle is only meaningful (and only safe) when both DTM planes hold
-  // the displayed BW frame. Skip when grayscale planes have been written over
-  // them (lsbValid), a grayscale refresh left the RAM unsynced, or the gray
-  // bank is still loaded — firing the mid bank's strong BW/WB drives against
-  // gray-coded state pairs would corrupt the region.
-  if (_inGrayscaleMode || !_redRamSynced || _grayState.lsbValid) return;
-  const uint16_t xEndLogical = static_cast<uint16_t>(((x + w - 1) < (_w - 1)) ? (x + w - 1) : (_w - 1));
-  const uint16_t yEndLogical = static_cast<uint16_t>(((y + h - 1) < (_h - 1)) ? (y + h - 1) : (_h - 1));
-  const uint16_t xs = static_cast<uint16_t>(x & ~7u);
-  const uint16_t xe = static_cast<uint16_t>(xEndLogical | 7u);
-  const uint16_t gateYStart = static_cast<uint16_t>((_h - 1) - yEndLogical);
-  const uint16_t gateYEnd = static_cast<uint16_t>((_h - 1) - y);
-  const uint8_t win[9] = {static_cast<uint8_t>(xs >> 8),
-                          static_cast<uint8_t>(xs & 0xFF),
-                          static_cast<uint8_t>(xe >> 8),
-                          static_cast<uint8_t>(xe & 0xFF),
-                          static_cast<uint8_t>(gateYStart >> 8),
-                          static_cast<uint8_t>(gateYStart & 0xFF),
-                          static_cast<uint8_t>(gateYEnd >> 8),
-                          static_cast<uint8_t>(gateYEnd & 0xFF),
-                          0x01};
-  bus.cmd(CMD_PARTIAL_IN);
-  bus.cmdData(CMD_PARTIAL_WINDOW, win, 9);
-  loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-  triggerRefresh(bus, /*turnOff=*/false);
-  bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8253X3Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
@@ -504,8 +427,7 @@ void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
     _inGrayscaleMode = false;
     _initialFullSyncsRemaining = 0;
     _forceFullSyncNext = false;
-    _forcedConditionPassesNext = 0;
-    return;
+      return;
   }
 
   // Differential grayscale leaves the gray bank loaded, so the next BW turn must
@@ -527,7 +449,6 @@ void Uc8253X3Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, c
 
   _redRamSynced = false;
   _forceFullSyncNext = false;
-  _forcedConditionPassesNext = 0;
   _grayState.lsbValid = false;
   _absoluteInput = false;
   _directGrayPass = false;
@@ -561,7 +482,6 @@ void Uc8253X3Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   _grayState.lsbValid = false;
   _redRamSynced = true;
   _forceFullSyncNext = false;
-  _forcedConditionPassesNext = 0;
   _inGrayscaleMode = false;
 }
 
@@ -588,7 +508,7 @@ void Uc8253X3Driver::requestResync(uint8_t settlePasses) {
   _absoluteInput = false;
   _directGrayPass = false;
   _forceFullSyncNext = true;
-  _forcedConditionPassesNext = settlePasses;
+  (void)settlePasses;
 }
 
 void Uc8253X3Driver::skipInitialResync() {
