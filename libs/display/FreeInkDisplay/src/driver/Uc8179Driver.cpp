@@ -115,6 +115,26 @@ constexpr lutbalance::LutSet makeDuLuts(const uint8_t frames) {
   return s;
 }
 
+// Smooth gray exit paint: held black pixels (KK, black in both frames) were
+// never driven and faded over many turns (status bar, user 10:24 9/30); a full
+// complement re-drive blinked every turn (user pick 2, 10:55). Instead KK gets
+// a short balanced nudge, n frames to white then n to black, at the end of the
+// paint so it lands with the other pixels' final push. Same total length as
+// the other rows: no added time. ponytail: 3 frames is a guess; raise it if the
+// fade persists, lower it if the nudge shows.
+constexpr uint8_t kHeldBlackNudgeFrames = 3;
+constexpr lutbalance::LutSet makeDuNudgeLuts(const uint8_t frames) {
+  lutbalance::LutSet s = makeDuLuts(frames);
+  const uint8_t n = frames < kHeldBlackNudgeFrames ? frames : kHeldBlackNudgeFrames;
+  uint8_t* kk = s.row[lutbalance::Kk];
+  kk[0] = 0x09;  // A ground, B ground, C 10 VDL (white), D 01 VDH (black)
+  kk[1] = frames;
+  kk[2] = static_cast<uint8_t>(frames - n);
+  kk[3] = n;
+  kk[4] = n;
+  return s;
+}
+
 // The only LUT register writer in this driver: takes gated sets only.
 void writeLutSet(EpdBus& bus, const lutbalance::CheckedLuts& luts) {
   for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
@@ -493,15 +513,13 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // B/W base and _grayMask its gray pixels. Pure B/W pixels are at their base,
   // so they get their true OLD (hold or a real transition); only gray pixels
   // get the target's complement. Built here, before _grayBase is overwritten.
-  // Smooth gray never swings held pixels, and black ones held for many turns
-  // faded lighter (the status bar, user 10:24 9/30), so there pixels black in
-  // both frames get the complement too: a balanced re-drive, ending on black.
+  // Smooth gray never swings held pixels; held blacks get the KK nudge
+  // (makeDuNudgeLuts) instead of a full re-drive.
   const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
                               fb != nullptr;
   if (selectivePaint) {
     for (uint32_t i = 0; i < _bufferSize; i++) {
-      const uint8_t redrive = static_cast<uint8_t>(_grayMask[i] | (_smoothGray ? ~(_grayBase[i] | fb[i]) : 0));
-      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~redrive) | (~fb[i] & redrive));
+      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~_grayMask[i]) | (~fb[i] & _grayMask[i]));
     }
   }
   _panelGrayValid = false;
@@ -624,9 +642,14 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     // A DU scrub loads DTM1 with the target's complement, so the OLD plane is
     // not the pixel's real state and the set must balance per row (Absolute).
     lutbalance::LutSet storage;
-    writeLutSet(bus, _complementOldPlane
-                         ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
-                         : lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Transition>(frames, storage));
+    // Only the smooth gray paint has true-OLD held blacks (KK); a full DU scrub
+    // complements every pixel, so the nudge row is unused there.
+    writeLutSet(bus,
+                _complementOldPlane && _smoothGray
+                    ? lutbalance::checkedGenerator<makeDuNudgeLuts, lutbalance::Policy::Absolute>(frames, storage)
+                : _complementOldPlane
+                    ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
+                    : lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Transition>(frames, storage));
   }
   gExpPll = fast && gExpActive && gKbdExp.pll != 0;
   if (gExpPll) {
