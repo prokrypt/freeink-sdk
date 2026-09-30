@@ -80,7 +80,6 @@ class Uc8179Driver : public PanelDriver {
   void skipInitialResync() override;
   bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
   bool grayOnPanel() const override { return _directGrayOnPanel; }
-  void setSmoothGray(bool smooth) override { _smoothGray = smooth; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
@@ -151,7 +150,6 @@ class Uc8179Driver : public PanelDriver {
   // With _grayBase it gives the panel's true state for the selective exit paint.
   uint8_t* _grayMask = nullptr;
   bool _panelGrayValid = false;  // _grayBase + _grayMask describe what the panel shows
-  bool _smoothGray = false;     // setSmoothGray(): nudge set when the B/W base is shown
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
   bool _absoluteInput = false;

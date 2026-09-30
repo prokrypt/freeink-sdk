@@ -283,8 +283,6 @@ class FreeInkDisplay {
   bool seedDisplayedFrame(const uint8_t* frame);
   // See PanelDriver::grayOnPanel. A frame retained for seeding is invalid while true.
   bool grayOnPanel() const;
-  // See PanelDriver::setSmoothGray.
-  void setSmoothGray(bool smooth);
   void beginDisplayWork();
   void abortPostRefresh();
   bool postRefreshAborted() const;

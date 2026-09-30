@@ -1007,10 +1007,6 @@ bool FreeInkDisplay::seedDisplayedFrame(const uint8_t* frame) {
 
 bool FreeInkDisplay::grayOnPanel() const { return _driver && _driver->grayOnPanel(); }
 
-void FreeInkDisplay::setSmoothGray(const bool smooth) {
-  if (_driver) _driver->setSmoothGray(smooth);
-}
-
 void FreeInkDisplay::beginDisplayWork() {
   if (_driver) _driver->beginDisplayWork();
 }
