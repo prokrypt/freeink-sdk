@@ -19,6 +19,7 @@
 // probes both and caches whichever responds.
 
 #include <Arduino.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 
 #include "M5Pm1.h"
@@ -62,6 +63,7 @@ constexpr uint16_t OUTPUT_MASK = PIN_EPD_POWER | PIN_EPD_RESET | PIN_TOUCH_RESET
 inline uint8_t g_addr = 0;
 
 inline bool writeBytesAt(uint8_t addr, uint8_t reg, const uint8_t* data, uint8_t len) {
+  I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   for (uint8_t i = 0; i < len; ++i) Wire.write(data[i]);
@@ -71,6 +73,7 @@ inline bool writeBytesAt(uint8_t addr, uint8_t reg, const uint8_t* data, uint8_t
 }
 
 inline bool readBytesAt(uint8_t addr, uint8_t reg, uint8_t* data, uint8_t len) {
+  I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;

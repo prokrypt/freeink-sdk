@@ -5,6 +5,7 @@
 #include "MultiTouchGestureMath.h"
 
 #if FREEINK_CAP_TOUCH
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>
 #if FREEINK_DEVICE_MURPHY_M4
@@ -1340,6 +1341,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
 }
 
 bool InputManager::readChsc6xPoint(TouchPoint& point) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
@@ -1398,6 +1400,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 // --- FT5x06 / FT6336 (M5Stack Paper Mono) ----------------------------------
 
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1406,6 +1409,7 @@ bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
 }
 
 bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1575,6 +1579,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
 // the stock firmware; the firmware blob (gsl/EegoA4GslFirmware.h) is byte-verified.
 
 bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1583,6 +1588,7 @@ bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_
 }
 
 bool InputManager::gslRead(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1860,11 +1866,16 @@ bool InputManager::setTouchSleep(const bool asleep) {
     pinMode(t.irq, OUTPUT);
     digitalWrite(t.irq, LOW);
     delay(5);
-    Wire.beginTransmission(gt911Addr);
-    Wire.write(0x80);
-    Wire.write(0x40);
-    Wire.write(static_cast<uint8_t>(0x05));
-    if (Wire.endTransmission() != 0) {
+    bool sent;
+    {
+      freeink::I2cBusLock bus;
+      Wire.beginTransmission(gt911Addr);
+      Wire.write(0x80);
+      Wire.write(0x40);
+      Wire.write(static_cast<uint8_t>(0x05));
+      sent = Wire.endTransmission() == 0;
+    }
+    if (!sent) {
       pinMode(t.irq, INPUT);
       return false;
     }
@@ -1895,6 +1906,7 @@ bool InputManager::setTouchSleep(const bool asleep) {
 }
 
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(gt911Addr);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
@@ -1913,6 +1925,7 @@ bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t 
 }
 
 void InputManager::gt911ClearStatus() {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(gt911Addr);
   Wire.write(0x81);
   Wire.write(0x4E);
@@ -2075,6 +2088,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   }
 #else
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(static_cast<uint8_t>(0x00));
   if (Wire.endTransmission(false) == 0) {
