@@ -84,12 +84,15 @@ constexpr lutbalance::LutSet kDirectGraySet = lutbalance::fromRows(kUltraChipDir
 // Smooth gray (setSmoothGray): the same set with the white (WW) and black (KK)
 // level bytes grounded, frame counts and repeats kept. The B/W base of the page
 // is on the panel, so black/white pixels hold and only gray pixels swing (no
-// full-screen flash). ponytail: holding keeps what the OTP Fast base left
+// full-screen flash). The dark-gray (WK) row is grounded too: dark pixels are
+// black in the base and stay black, so only light gray is drawn (bolder text,
+// user pick 10:21 9/30). ponytail: holding keeps what the OTP Fast base left
 // (same ghosting as a B/W page turn); the app turns it off on image pages.
 constexpr lutbalance::LutSet makeDirectGrayHold() {
   lutbalance::LutSet s = kDirectGraySet;
   for (size_t g = 0; g < lutbalance::kRowBytes; g += lutbalance::kGroupBytes) {
     s.row[lutbalance::Ww][g] = 0;
+    s.row[lutbalance::Wk][g] = 0;
     s.row[lutbalance::Kk][g] = 0;
   }
   return s;
@@ -388,7 +391,9 @@ void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   syncStaleOldPlane(bus);
   if (!fb) return;
   if (skipBaseOverDirectGray(fb, fallback)) return;
+  _paintForGrayBase = true;
   display(bus, fb, nullptr, fallback, turnOff);
+  _paintForGrayBase = false;
 }
 
 bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
@@ -400,7 +405,10 @@ bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, Ref
   _directGrayPass = false;
   _directGrayPlanes = 0;
   // Same routing as displayGrayscaleBase(); displayStart() leaves its refresh pending.
-  return displayStart(bus, fb, nullptr, fallback, turnOff);
+  _paintForGrayBase = true;
+  const bool pending = displayStart(bus, fb, nullptr, fallback, turnOff);
+  _paintForGrayBase = false;
+  return pending;
 }
 
 // Stream a framebuffer into RAM plane `ramCmd`, mirrored vertically via row
@@ -521,8 +529,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // (log 20260930T043445Z-ae927686: drawer at 41661), and 12 still left the
     // drawer's new black text a bit gray, which each later OTP Fast then darkened
     // (log 20260930T092637Z-c7ee2000-aa-darken L1722-2019). The OEM gray set
-    // ends with ~24 frames to white and ~38 to black. ponytail: 24 per phase;
-    // raise if new black text still looks gray.
+    // ends with ~24 frames to white and ~38 to black. ponytail: 24 per phase
+    // before a gray pass (Softfast turns); 36 when the paint is the final
+    // B/W screen (menus and the reader panels over a gray page, user pick 10:21).
     // Every row of the paint LUT nets zero (Absolute), so a per-pixel mix of
     // true and complement OLD stays balanced.
     if (selectivePaint) {
@@ -532,7 +541,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       streamPlane(bus, CMD_DTM1, fb, true);
     }
     streamPlane(bus, CMD_DTM2, fb);
-    _scrubLutFrames = 24;
+    _scrubLutFrames = _paintForGrayBase ? 24 : 36;
     _complementOldPlane = true;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
