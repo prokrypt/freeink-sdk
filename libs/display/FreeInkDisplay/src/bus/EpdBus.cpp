@@ -238,13 +238,14 @@ bool EpdBus::cmdReadStream(uint8_t cmd, uint8_t* out, uint32_t len) {
   digitalWrite(_pins.dc, HIGH);
   pinMode(_pins.mosi, INPUT_PULLUP);
   delayMicroseconds(1);
+  // No per-bit delay: each digitalWrite/digitalRead call already outlasts the
+  // read timing (cycle >= 150 ns, SCL high/low >= 60 ns, access <= 50 ns;
+  // datasheet AC timing), and 1 us waits made a 2 KB read take ~117 ms.
   for (uint32_t i = 0; i < len; ++i) {
     uint8_t value = 0;
     for (uint8_t bit = 0; bit < 8; ++bit) {
-      delayMicroseconds(1);
       value = static_cast<uint8_t>((value << 1) | (digitalRead(_pins.mosi) == HIGH ? 1 : 0));
       digitalWrite(_pins.sclk, HIGH);
-      delayMicroseconds(1);
       digitalWrite(_pins.sclk, LOW);
     }
     out[i] = value;
