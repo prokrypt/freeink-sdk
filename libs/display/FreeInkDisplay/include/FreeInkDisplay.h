@@ -517,19 +517,11 @@ class FreeInkDisplay {
 struct Uc8179KbdExperiment {
   enum Flag : uint8_t {
     SkipOldResync = 1 << 0,  // retired T2 (rely on CDI N2OCP); ignored, OLD is always re-streamed
-    TwoWindow = 1 << 1,      // retired T3 (windowed DTM2 upload); ignored, DTM2 is always the whole panel
     KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
-    WindowDrf = 1 << 3,      // retired T6 (windowed DRF); ignored
-  };
-  // Retired with T3; kept so existing callers still build. Ignored.
-  struct Window {
-    uint16_t x, y, w, h;
   };
   uint8_t flags = 0;
   uint8_t lutFrames = 3;  // DU frames per phase for KW/WK (two phases)
   uint8_t pll = 0;        // 0x30 value during the refresh; 0 keeps the default
-  uint8_t windowCount = 0;
-  Window windows[2] = {};
 };
 struct Uc8179KbdTiming {
   uint32_t uploadMs = 0;  // displayStart entry -> DRF command
