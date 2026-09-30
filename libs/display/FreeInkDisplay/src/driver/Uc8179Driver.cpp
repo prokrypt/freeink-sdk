@@ -381,33 +381,34 @@ void Uc8179Driver::restoreBwConfiguration(EpdBus& bus) {
 // list; datasheet p.47/49/51). .67 reads -1.80 V at room temperature and
 // -2.40 V at 15 C and below, not the gray packet's fixed -2.00 V (log
 // 20260930T171300Z-8aa3091b-otpread L6-15). ROTP (RA2h, p.37) only reads.
-// Read once at begin(); ~2 KB bit-banged, about 40 ms.
+// Read once at begin(): the 12-byte head for the boundaries, then only up to
+// the last used TR header (1.25 KB on .67; the whole 2 KB took 117 ms with
+// 1 us bit waits, log 20260930T182500Z-c2123894-postflash L531-532).
 void Uc8179Driver::readOtpVcom(EpdBus& bus) {
-  constexpr uint32_t kLen = 0x49 + 11 * 0xF7 + 6;
-  auto* otp = static_cast<uint8_t*>(heap_caps_malloc(kLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (otp == nullptr) {
-    LOG_ERR("EPD", "8179 OTP VCOM: no buffer, using the gray packet's");
-    return;
-  }
+  const unsigned long startMs = millis();
+  uint8_t head[12];
   bus.waitBusy(" 8179_otp_ready");
-  bool ok = bus.cmdReadStream(0xA2, otp, kLen) && otp[0] == 0xA5;
+  bool ok = bus.cmdReadStream(0xA2, head, sizeof(head)) && head[0] == 0xA5;
   unsigned trs = 0;
-  for (; ok && trs < 11 && otp[1 + trs] != 0x7F; ++trs) {
-    ok = trs == 0 || static_cast<int8_t>(otp[1 + trs]) > static_cast<int8_t>(otp[trs]);
+  for (; ok && trs < 11 && head[1 + trs] != 0x7F; ++trs) {
+    ok = trs == 0 || static_cast<int8_t>(head[1 + trs]) > static_cast<int8_t>(head[trs]);
   }
+  const uint32_t len = 0x49 + trs * 0xF7 + 6;
+  auto* otp = ok ? static_cast<uint8_t*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) : nullptr;
+  ok = otp != nullptr && bus.cmdReadStream(0xA2, otp, len) && memcmp(otp, head, sizeof(head)) == 0;
   for (unsigned n = 0; ok && n <= trs; ++n) {
     _otpVcom[n] = otp[0x49 + n * 0xF7 + 5];
     ok = _otpVcom[n] <= 0x4F;  // -4.05 V, the table's end (p.35)
   }
-  memcpy(_otpTb, otp + 1, sizeof(_otpTb));
+  memcpy(_otpTb, head + 1, sizeof(_otpTb));
   free(otp);
   _otpTrs = ok ? static_cast<uint8_t>(trs + 1) : 0;
   if (!ok) {
     LOG_ERR("EPD", "8179 OTP VCOM: unreadable, using the gray packet's");
     return;
   }
-  char line[96];
-  int n = snprintf(line, sizeof(line), "8179 OTP VCOM (TB C: VCOM_DC):");
+  char line[112];
+  int n = snprintf(line, sizeof(line), "8179 OTP VCOM %lu ms (TB C: VCOM_DC):", millis() - startMs);
   for (unsigned t = 0; t < _otpTrs && n < static_cast<int>(sizeof(line)) - 12; ++t) {
     n += snprintf(line + n, sizeof(line) - n, " %d:%02X", t + 1 < _otpTrs ? static_cast<int8_t>(_otpTb[t]) : 127,
                   _otpVcom[t]);
@@ -417,14 +418,20 @@ void Uc8179Driver::readOtpVcom(EpdBus& bus) {
 
 // OTP VCOM for the panel's last measured temperature (25 C before a sample),
 // the gray packet's when the OTP was unreadable.
-uint8_t Uc8179Driver::vcomDc() const {
-  if (_otpTrs == 0) return kUc8179DirectGrayConfig[5];
+uint8_t Uc8179Driver::vcomDc() {
+  if (_otpTrs == 0) {
+    if (_vcomTrLogged != 0xFE) LOG_INF("EPD", "8179 VCOM %02X (gray packet, no OTP)", kUc8179DirectGrayConfig[5]);
+    _vcomTrLogged = 0xFE;
+    return kUc8179DirectGrayConfig[5];
+  }
   int celsius = 25;
 #if FREEINK_UC8179_PANEL_TEMP
   if (gPanelTempValid && millis() - gPanelTempMs <= PANEL_TEMP_MAX_AGE_MS) celsius = gPanelTempC;
 #endif
   unsigned tr = 0;
   while (tr + 1 < _otpTrs && celsius > static_cast<int8_t>(_otpTb[tr])) ++tr;
+  if (tr != _vcomTrLogged) LOG_INF("EPD", "8179 VCOM %02X (TR%u, %d C)", _otpVcom[tr], tr, celsius);
+  _vcomTrLogged = static_cast<uint8_t>(tr);
   return _otpVcom[tr];
 }
 

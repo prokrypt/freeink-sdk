@@ -130,7 +130,7 @@ class Uc8179Driver : public PanelDriver {
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
   void readOtpVcom(EpdBus& bus);
-  uint8_t vcomDc() const;
+  uint8_t vcomDc();
   bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
@@ -156,6 +156,7 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _otpTb[11] = {};    // OTP temperature boundaries (readOtpVcom)
   uint8_t _otpVcom[12] = {};  // OTP VCOM_DC per temperature range
   uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
+  uint8_t _vcomTrLogged = 0xFF;  // TR whose VCOM was last logged (0xFE: fallback)
   bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
   bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
