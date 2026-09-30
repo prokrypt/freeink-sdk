@@ -108,11 +108,6 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
-  // EXPERIMENT (test/kbd-uc8179): PTL helpers and windowed DTM2 upload.
-  void writePartialWindow(EpdBus& bus, uint16_t xStart, uint16_t xEnd, uint16_t yStart, uint16_t yEnd,
-                          bool scanAllGates = true);
-  void writeFullPartialWindow(EpdBus& bus);
-  void streamWindows(EpdBus& bus, const uint8_t* fb);
   void configureDirectGrayscale(EpdBus& bus);
   void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
@@ -158,7 +153,6 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _directGrayPlanes = 0;
   uint32_t _spiUs = 0;
   uint8_t _spiPlanes = 0;
-  uint8_t _spiWindows = 0;  // T3 windowed DTM2 writes since the last SPI log
 
   bool _isScreenOn = false;
   // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).

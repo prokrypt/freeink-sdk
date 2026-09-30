@@ -58,7 +58,6 @@ constexpr uint8_t CMD_DTM1 = 0x10;                // OLD plane in KW mode
 constexpr uint8_t CMD_DTM2 = 0x13;                // NEW plane in KW mode
 constexpr uint8_t CMD_DISPLAY_REFRESH = 0x12;     // DRF
 constexpr uint8_t CMD_PLL_CONTROL = 0x30;         // PLL
-constexpr uint8_t CMD_PARTIAL_WINDOW = 0x90;      // PTL
 constexpr uint8_t CMD_PARTIAL_IN = 0x91;          // PTIN (partial refresh in)
 constexpr uint8_t CMD_PARTIAL_OUT = 0x92;         // PTOUT (partial refresh out)
 constexpr uint8_t CMD_VCOM_DATA_INTERVAL = 0x50;  // CDI
@@ -516,11 +515,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       (duScrubRequested && gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut)) || halfScrubFrames;
   if (duScrub) LOG_DBG("EPD", "8179_EXP: DU scrub refresh");
   // NEW plane (0x13) = new frame.
-  if (gExpActive && !duScrub && (gKbdExp.flags & Uc8179KbdExperiment::TwoWindow) && gKbdExp.windowCount > 0) {
-    streamWindows(bus, fb);
-  } else {
-    streamPlane(bus, CMD_DTM2, fb);
-  }
+  streamPlane(bus, CMD_DTM2, fb);
   if (duScrub) streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
   // Half with a valid OLD plane keeps it (true transitions). Full, and Half on
   // an unknown panel state, keep the absolute-from-white behavior.
@@ -539,11 +534,10 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
 }
 
 void Uc8179Driver::logSpiBeforeDrf(const char* kind) {
-  LOG_DBG("EPD", "SPI %s: %u planes %lu ms (%u windowed writes)", kind, static_cast<unsigned>(_spiPlanes),
-          static_cast<unsigned long>(_spiUs / 1000), static_cast<unsigned>(_spiWindows));
+  LOG_DBG("EPD", "SPI %s: %u planes %lu ms", kind, static_cast<unsigned>(_spiPlanes),
+          static_cast<unsigned long>(_spiUs / 1000));
   _spiUs = 0;
   _spiPlanes = 0;
-  _spiWindows = 0;
 }
 
 void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
@@ -595,11 +589,6 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
 
   if (fast) bus.cmd(CMD_PARTIAL_IN);  // PTIN — whole-panel partial (no 0x90 window)
   gKbdTiming.drfRows = static_cast<uint16_t>(_h);
-  if (fast && gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::TwoWindow) && gKbdExp.windowCount > 0) {
-    // PTL persists across PTOUT, and plain PTIN refreshes whatever window it
-    // holds: restore the whole panel after T3 windowed writes.
-    writeFullPartialWindow(bus);
-  }
   logSpiBeforeDrf(fast ? "fast" : "full");
   gDrfStartMs = millis();
   gKbdTiming.uploadMs = static_cast<uint32_t>(gDrfStartMs - gUploadStartMs);
@@ -689,60 +678,6 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
     bus.waitBusy(" 8179_POF");
     _isScreenOn = false;
   }
-}
-
-void Uc8179Driver::writePartialWindow(EpdBus& bus, uint16_t xStart, uint16_t xEnd, uint16_t yStart, uint16_t yEnd,
-                                      bool scanAllGates) {
-  const uint8_t window[9] = {static_cast<uint8_t>(xStart >> 8),
-                             static_cast<uint8_t>(xStart & 0xF8),
-                             static_cast<uint8_t>(xEnd >> 8),
-                             static_cast<uint8_t>(xEnd | 0x07),
-                             static_cast<uint8_t>(yStart >> 8),
-                             static_cast<uint8_t>(yStart),
-                             static_cast<uint8_t>(yEnd >> 8),
-                             static_cast<uint8_t>(yEnd),
-                             static_cast<uint8_t>(scanAllGates ? 0x01 : 0x00)};  // PT_SCAN
-  bus.cmdData(CMD_PARTIAL_WINDOW, window, sizeof(window));
-}
-
-void Uc8179Driver::writeFullPartialWindow(EpdBus& bus) {
-  writePartialWindow(bus, 0, static_cast<uint16_t>(_w - 1), 0, static_cast<uint16_t>(_h - 1));
-}
-
-// EXPERIMENT T3: write DTM2 only inside each window. RAM row r holds
-// framebuffer row _h-1-r (see streamPlane); RAM x equals framebuffer x.
-void Uc8179Driver::streamWindows(EpdBus& bus, const uint8_t* fb) {
-  const uint32_t startUs = micros();
-  bus.cmd(CMD_PARTIAL_IN);
-  for (uint8_t i = 0; i < gKbdExp.windowCount && i < 2; i++) {
-    const auto& win = gKbdExp.windows[i];
-    const uint16_t x0 = static_cast<uint16_t>(win.x & ~7U);
-    uint16_t x1 = static_cast<uint16_t>((win.x + win.w + 7U) & ~7U);
-    if (x1 > _w) x1 = _w;
-    uint16_t y1 = static_cast<uint16_t>(win.y + win.h);
-    if (y1 > _h) y1 = _h;
-    if (x1 <= x0 || y1 <= win.y) continue;
-    const uint16_t ramTop = static_cast<uint16_t>(_h - y1);  // RAM row of framebuffer row y1-1
-    const uint16_t ramBottom = static_cast<uint16_t>(_h - 1 - win.y);
-    writePartialWindow(bus, x0, static_cast<uint16_t>(x1 - 1), ramTop, ramBottom);
-    const uint16_t bytes = static_cast<uint16_t>((x1 - x0) / 8);
-    const uint16_t rowsPerChunk = static_cast<uint16_t>(STREAM_CHUNK_BYTES / bytes);
-    bus.cmd(CMD_DTM2);
-    bus.beginTxn();
-    uint16_t pending = 0;
-    for (uint16_t r = ramTop; r <= ramBottom; r++) {
-      const uint8_t* src = fb + static_cast<uint32_t>(_h - 1 - r) * _wb + x0 / 8;
-      memcpy(streamChunk + static_cast<size_t>(pending) * bytes, src, bytes);
-      if (++pending == rowsPerChunk) {
-        bus.rawWriteBytes(streamChunk, static_cast<uint16_t>(pending * bytes));
-        pending = 0;
-      }
-    }
-    if (pending) bus.rawWriteBytes(streamChunk, static_cast<uint16_t>(pending * bytes));
-    bus.endTxn();
-    _spiWindows++;
-  }
-  _spiUs += micros() - startUs;
 }
 
 void Uc8179Driver::requestResync(uint8_t settlePasses) {
