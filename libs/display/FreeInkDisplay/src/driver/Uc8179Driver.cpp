@@ -76,33 +76,7 @@ constexpr uint8_t PLL_50_HZ = 0x06;
 
 constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
 
-// OEM XTF_PRE_BW_MID conditioning waveform. Each row is command-prefixed:
-// byte 0 selects LUT register 0x20..0x24 and the remaining 42 bytes are data.
-// It runs over equal B/W planes immediately before the short AA waveform so
-// gray and white particle states do not relax after the page stops updating.
-constexpr uint8_t kGrayPreBwMid[5][43] = {
-    {0x20, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x02, 0x04, 0x00, 0x00, 0x01},
-    {0x21, 0x20, 0x06, 0x01, 0x06, 0x06, 0x01, 0x00, 0x02, 0x04, 0x00, 0x00, 0x01},
-    {0x22, 0xAA, 0x06, 0x01, 0x06, 0x06, 0x01, 0xA0, 0x02, 0x04, 0x00, 0x00, 0x01},
-    {0x23, 0x55, 0x06, 0x01, 0x06, 0x06, 0x01, 0x50, 0x02, 0x04, 0x00, 0x00, 0x01},
-    {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x10, 0x02, 0x04, 0x00, 0x00, 0x01},
-};
 // Upload sets in register order R20h..R24h, gated by UltraChipLutBalance.h.
-constexpr lutbalance::LutSet makeGrayPreBwMidSet() {
-  lutbalance::LutSet s{};
-  for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
-    for (uint8_t i = 0; i < GRAY_LUT_LEN; ++i) s.row[r][i] = kGrayPreBwMid[r][i + 1];
-  }
-  return s;
-}
-constexpr bool cmdOrderIsR20ToR24() {
-  for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
-    if (kGrayPreBwMid[r][0] != 0x20 + r) return false;
-  }
-  return true;
-}
-static_assert(cmdOrderIsR20ToR24(), "gray LUT rows must be in register order R20h..R24h");
-constexpr lutbalance::LutSet kGrayPreBwMidSet = makeGrayPreBwMidSet();
 // Direct gray rows are VCOM, black, light, dark, white; registers take VCOM,
 // white, light, dark, black.
 constexpr uint8_t kDirectGrayOrder[lutbalance::kRows] = {0, 4, 2, 3, 1};
@@ -287,7 +261,6 @@ void Uc8179Driver::initController(EpdBus& bus) {
   }
 
   _isScreenOn = false;
-  _grayRefreshedOnce = false;
   _bwPlanesSynced = false;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
@@ -347,7 +320,6 @@ void Uc8179Driver::restoreBwConfiguration(EpdBus& bus) {
   _directGrayConfigured = false;
   _needFullClear = true;
   _oldPlaneValid = false;
-  _redriveAfterGray = false;
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
@@ -358,7 +330,6 @@ void Uc8179Driver::begin(EpdBus& bus) {
   _directGrayPlanes = 0;
   _needFullClear = true;
   _oldPlaneValid = false;
-  _redriveAfterGray = false;
 #if defined(BOARD_HAS_PSRAM)
   if (_grayBase == nullptr) {
     _grayBase = static_cast<uint8_t*>(heap_caps_malloc(_bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -370,91 +341,15 @@ void Uc8179Driver::begin(EpdBus& bus) {
 
 void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   syncStaleOldPlane(bus);
-  // CrossPoint's whole-plane text-AA path calls ordinary displayBuffer(FAST)
-  // for its B/W base. After an AA page, route that base through stock's
-  // non-flashing previous->current transition; promoting it to GC fixed the
-  // charge but caused a full flash on every page.
-  if (mode == RefreshMode::Fast && _redriveAfterGray && _grayRefreshedOnce && _oldPlaneValid && !_needFullClear) {
-    transitionGrayscaleBase(bus, fb, turnOff);
-    return;
-  }
   displayStart(bus, fb, prev, mode, turnOff);
   displayFinish(bus, fb);
-}
-
-void Uc8179Driver::transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff) {
-  if (!fb) return;
-  const bool preconditionRunning = transitionGrayscaleBaseStart(bus, fb);
-  transitionGrayscaleBaseFinish(bus, fb, turnOff, preconditionRunning, /*deferOldPlane=*/false);
-}
-
-bool Uc8179Driver::transitionGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb) {
-  syncStaleOldPlane(bus);
-  _grayBaseValid = false;
-  _absoluteGrayPlanes = false;
-  if (_grayBase != nullptr) {
-    memcpy(_grayBase, fb, _bufferSize);
-    _grayBaseValid = true;
-  }
-
-  bus.waitBusy(" 8179_gray_base_ready");
-  // DTM1 retains the preceding page's clean B/W base; DTM2 receives the new
-  // base. XTF_PRE_BW_MID drives that real transition without the OTP GC flash.
-  streamPlane(bus, CMD_DTM2, fb);
-  _bwPlanesSynced = false;
-  return startGrayscalePrecondition(bus);
-}
-
-void Uc8179Driver::transitionGrayscaleBaseFinish(EpdBus& bus, const uint8_t* fb, bool turnOff, bool preconditionRunning,
-                                                 bool deferOldPlane) {
-  if (preconditionRunning) finishGrayscalePrecondition(bus);
-
-  // Keep the generic B/W baseline coherent in case no AA pass follows (Home or
-  // a menu). An AA upload may immediately overwrite these planes; its cached
-  // B/W snapshot above remains intact.
-  // A deferred base defers this upload: the AA LSB upload that follows
-  // overwrites DTM1 anyway, and _grayBase holds the frame for any other path.
-  if (deferOldPlane && _grayBaseValid && _grayBase != nullptr) {
-    _oldPlaneStale = true;
-    _bwPlanesSynced = false;
-  } else {
-    streamPlane(bus, CMD_DTM1, fb);
-    _bwPlanesSynced = true;
-  }
-  _oldPlaneValid = true;
-  _redriveAfterGray = false;
-  _needFullClear = false;
-
-  if (turnOff && _isScreenOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_gray_base_POF");
-    _isScreenOn = false;
-  }
 }
 
 void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
   syncStaleOldPlane(bus);
   if (!fb) return;
-
-  // Factory.bin's first gray_aa call paints its B/W base normally. Later calls
-  // do NOT paint the new base and then condition two equal planes: they load the
-  // retained previous base into DTM1, the new base into DTM2, and use
-  // XTF_PRE_BW_MID as the page transition itself. Our former extra equal-plane
-  // pass caused the visible gray muddling seen in hardware testing and did not
-  // discharge the AA residue left by the preceding page.
-  // Explicit Full/Half requests must remain real B/W clearing activations.
-  // Only Fast may be replaced by the differential stock AA transition.
-  // The XTF_PRE_BW_MID transition exists to discharge the residue of a
-  // completed AA page. When the previous page never got its gray activation
-  // (a quick turn cancelled it), the panel is plain B/W: use the ~110 ms
-  // shorter DU base, as Factory.bin does for its first AA page.
-  if (fallback != RefreshMode::Fast || !_redriveAfterGray || !_oldPlaneValid || _needFullClear) {
-    _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
-    display(bus, fb, nullptr, fallback, turnOff);
-    return;
-  }
-
-  transitionGrayscaleBase(bus, fb, turnOff);
+  _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
+  display(bus, fb, nullptr, fallback, turnOff);
 }
 
 bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
@@ -464,17 +359,9 @@ bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, Ref
   _absoluteInput = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;
-  // Same routing as displayGrayscaleBase(), with the B/W fallback through the
-  // async split. displayStart() always leaves its refresh pending.
-  if (fallback != RefreshMode::Fast || !_redriveAfterGray || !_oldPlaneValid || _needFullClear) {
-    _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
-    return displayStart(bus, fb, nullptr, fallback, turnOff);
-  }
-  _pendingGrayPre = transitionGrayscaleBaseStart(bus, fb);
-  _pendingGrayBase = true;
-  _pendingTurnOff = turnOff;
-  _pendingRefresh = true;
-  return true;
+  // Same routing as displayGrayscaleBase(); displayStart() leaves its refresh pending.
+  _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
+  return displayStart(bus, fb, nullptr, fallback, turnOff);
 }
 
 // Stream a framebuffer into RAM plane `ramCmd`, mirrored vertically via row
@@ -570,8 +457,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // KW (black->white) NEVER runs and last page's text is never erased = heavy
   // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
-  // Half is the explicit GC clean. Post-AA Fast paints are intercepted by
-  // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead.
+  // Half is the explicit GC clean.
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames;
 
@@ -622,8 +508,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // an unknown panel state, keep the absolute-from-white behavior.
   if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
-  // A completed ordinary refresh supersedes any pending post-AA transition.
-  _redriveAfterGray = false;
 
   _scrubLutFrames = halfScrubFrames;
   _complementOldPlane = duScrub;
@@ -744,13 +628,6 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus, const unsigned long perio
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
-  if (_pendingGrayBase) {
-    _pendingGrayBase = false;
-    transitionGrayscaleBaseFinish(bus, fb, _pendingTurnOff, _pendingGrayPre, /*deferOldPlane=*/true);
-    _pendingGrayPre = false;
-    return;
-  }
-
   bus.waitRefreshComplete(" 8179_DRF");
   gKbdTiming.doneMs = millis();
   gKbdTiming.drfMs = static_cast<uint32_t>(gKbdTiming.doneMs - gDrfStartMs);
@@ -929,70 +806,9 @@ void Uc8179Driver::syncStaleOldPlane(EpdBus& bus) {
   }
 }
 
-void Uc8179Driver::runGrayscalePrecondition(EpdBus& bus) {
-  if (startGrayscalePrecondition(bus)) finishGrayscalePrecondition(bus);
-}
-
-bool Uc8179Driver::startGrayscalePrecondition(EpdBus& bus) {
-  // Factory.bin skips XTF_PRE_BW_MID for its first AA page. Callers must have
-  // retained the previous B/W base in DTM1 and loaded the new base into DTM2.
-  if (!_oldPlaneValid || !_grayRefreshedOnce) return false;
-
-  bus.waitBusy(" 8179_gray_pre_ready");
-  bus.cmd(CMD_PARTIAL_IN);
-  const uint16_t xEnd = static_cast<uint16_t>(_w - 1);
-  const uint16_t yEnd = static_cast<uint16_t>(_h - 1);
-  const uint8_t fullWindow[9] = {0x00, 0x00, static_cast<uint8_t>(xEnd >> 8), static_cast<uint8_t>(xEnd | 0x07),
-                                 0x00, 0x00, static_cast<uint8_t>(yEnd >> 8), static_cast<uint8_t>(yEnd),
-                                 0x01};
-  bus.cmdData(CMD_PARTIAL_WINDOW, fullWindow, sizeof(fullWindow));
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);  // REG=1: run the external XTF_PRE_BW_MID tables
-  bus.data(_cfg.psr1);
-  bus.cmd(CMD_PFS);
-  bus.data(_cfg.pfs);
-  bus.cmd(CMD_GATE_SCAN);
-  bus.data(_cfg.gateScan);
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiActive);  // Factory.bin FUN_4214eab4 uses 0x29 for every pre-pass
-  bus.data(CDI_INTERVAL);
-  bus.cmd(CMD_CCSET);
-  bus.data(_cfg.ccset);
-  bus.cmd(CMD_TSSET);
-  bus.data(_cfg.tssetFast);
-  // Vendor exemption: byte-exact OEM XTF_PRE_BW_MID; nets WW -1, KK +4 frames.
-  writeLutSet(bus, lutbalance::vendorTable<kGrayPreBwMidSet>());
-
-  if (!_isScreenOn) {
-    bus.cmd(CMD_POWER_ON);
-    bus.waitBusy(" 8179_gray_pre_PON");
-    _isScreenOn = true;
-  }
-  logSpiBeforeDrf("gray_pre");
-  bus.cmd(CMD_DISPLAY_REFRESH);
-  // Confirm the waveform started (BUSY dropped) before returning, as
-  // startBwRefresh() does, so a deferred finish only rides out completion.
-  {
-    const int8_t busyPin = bus.pins().busy;
-    const unsigned long t0 = millis();
-    while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
-  }
-  return true;
-}
-
-void Uc8179Driver::finishGrayscalePrecondition(EpdBus& bus) {
-  bus.waitBusy(" 8179_gray_pre_DRF");
-  bus.cmd(CMD_PARTIAL_OUT);
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_cfg.cdiIdle);
-  bus.data(CDI_INTERVAL);
-}
-
 void Uc8179Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  // Intentionally no extra pass. The correct stock transition has to run while
-  // DTM1 still contains the previous page and is therefore performed by
-  // displayGrayscaleBase(). After a normal B/W activation both planes are the
-  // current page; conditioning that equal pair only adds visible gray muddling.
+  // Intentionally no extra pass: the direct-gray waveform drives every pixel
+  // absolutely, so there is nothing to condition.
   (void)bus;
   (void)x;
   (void)y;
@@ -1015,8 +831,7 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
     _oldPlaneValid = false;
     _bwPlanesSynced = false;
     _needFullClear = true;
-    _redriveAfterGray = false;
-    return;
+      return;
   }
   _absoluteInput = false;
   _directGrayPass = false;
@@ -1136,7 +951,6 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   _absoluteInput = false;
   _needFullClear = true;
   _oldPlaneValid = false;
-  _redriveAfterGray = false;
   _grayBaseValid = false;
   _absoluteGrayPlanes = false;
   if (turnOff) {
