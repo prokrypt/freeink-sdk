@@ -910,9 +910,16 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   logSpiBeforeDrf(fast ? "fast" : "full");
   // Flash duck: the OTP GC (Full/Half) swings from its first frame; a DU with
   // a complement OLD plane drives white pixels black first (not a selective
-  // paint: there held pixels keep their true OLD). OTP Fast, DU transitions,
-  // null and the smooth re-drive (kk3: no visible flash) hold.
-  const int swingFrame = !fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint) ? 0 : -1;
+  // paint: there held pixels keep their true OLD); the smooth re-drive swings
+  // held whites for its last 2n frames, except under a Softfast page's gray
+  // base (kk3: that turn shows no flash). OTP Fast, DU transitions and null hold.
+  const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase;
+  int swingFrame = -1;
+  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint)) {
+    swingFrame = 0;
+  } else if (redrive) {
+    swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
+  }
   swingStart(swingFrame, !fast ? &gGcFrameUs : kbdLut && !_nullLut ? &gDuFrameUs : nullptr,
              !fast ? 1 : 2 * frames, !gExpPll);
   gDrfStartMs = millis();
