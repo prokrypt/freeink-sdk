@@ -180,5 +180,13 @@ constexpr bool uc8279Balanced(const uint8_t (&bank)[5][43], Policy p) {
   return net[Ww] == 0 && net[Kk] == 0 && net[Kw] + net[Wk] == 0;
 }
 
+// Raw UC8279 bank (5 x 49, register chosen by the loader): every row nets zero.
+constexpr bool uc8279RowsZero(const uint8_t (&bank)[5][49]) {
+  for (uint8_t r = 0; r < kRows; ++r) {
+    if (uc8279RowNet(bank[r], 49) != 0) return false;
+  }
+  return true;
+}
+
 }  // namespace lutbalance
 }  // namespace freeink

@@ -315,14 +315,10 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   _directGrayPass = false;
   // OEM V5.6.33 grayscale base update: write the new frame to DTM2 and fire
   // the "AA-pre-BW(mid)" bank as a differential refresh against the old frame
-  // still held in DTM1. Changed pixels get the strong 0xAA/0x55 transition
-  // drives, unchanged pixels the gentle 0x20/0x10 reinforcement -- leaving
-  // the whole region in the calibrated state the gray nudge bank expects.
-  // When the controller state cannot support a clean differential (DTM1
-  // unsynced after AA, boot full-syncs pending, or an explicit resync
-  // request), fall back to the normal display path and follow it with the
-  // settle flavor of the same bank (DTM1 == DTM2 after display()'s post-
-  // refresh sync, so only the gentle WW/BB cells fire).
+  // still held in DTM1 (balanced: changed pixels get the 0xAA/0x55 drives,
+  // holds are GND). When the controller state cannot support a clean
+  // differential (DTM1 unsynced after AA, boot full-syncs pending, or an
+  // explicit resync request), take the normal display path instead.
   if (_inGrayscaleMode) {
     // grayscaleRevert scrubs the panel to white and leaves BOTH DTM planes
     // all-white with _redRamSynced set, so DTM1 matches the displayed state
@@ -337,9 +333,8 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   const bool cleanBaseNeeded =
       !_redRamSynced || _grayState.lsbValid || _forceFullSyncNext || _initialFullSyncsRemaining > 0;
   if (cleanBaseNeeded) {
-    display(bus, fb, nullptr, fallback, /*turnOff=*/false);
-    loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-    triggerRefresh(bus, turnOff);
+    // The mid bank's holds are GND, so a settle with DTM1 == DTM2 drives nothing.
+    display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
   bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
@@ -350,45 +345,6 @@ void Uc8253X3Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, Refres
   bus.sendPlaneFlipped(CMD_DTM1, fb, _h, _wb);
   bus.cmd(CMD_DATA_STOP);
   _redRamSynced = true;
-}
-
-void Uc8253X3Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  // OEM V5.6.33 "AA-pre-BW(mid)" pass: gentle settle of the displayed BW
-  // frame (DTM1 == DTM2 == frame after display()'s post-refresh DTM1 sync)
-  // that leaves particles receptive to the weak grayscale nudge waveform.
-  // Without it a strong base refresh sets pixels too firmly for the gray
-  // drive to move. Windowed to the gray region via PTL exactly like the OEM
-  // loader (PTIN -> window -> CDI/bank -> refresh -> PTOUT). The PTL Y range
-  // is in GATE space (logical row y lives at gate H-1-y, see
-  // writeGrayscalePlaneStrip); X is byte-aligned outward since PTL horizontal
-  // resolution is 8 pixels.
-  if (w == 0 || h == 0 || x >= _w || y >= _h) return;
-  // The settle is only meaningful (and only safe) when both DTM planes hold
-  // the displayed BW frame. Skip when grayscale planes have been written over
-  // them (lsbValid), a grayscale refresh left the RAM unsynced, or the gray
-  // bank is still loaded — firing the mid bank's strong BW/WB drives against
-  // gray-coded state pairs would corrupt the region.
-  if (_inGrayscaleMode || !_redRamSynced || _grayState.lsbValid) return;
-  const uint16_t xEndLogical = static_cast<uint16_t>(((x + w - 1) < (_w - 1)) ? (x + w - 1) : (_w - 1));
-  const uint16_t yEndLogical = static_cast<uint16_t>(((y + h - 1) < (_h - 1)) ? (y + h - 1) : (_h - 1));
-  const uint16_t xs = static_cast<uint16_t>(x & ~7u);
-  const uint16_t xe = static_cast<uint16_t>(xEndLogical | 7u);
-  const uint16_t gateYStart = static_cast<uint16_t>((_h - 1) - yEndLogical);
-  const uint16_t gateYEnd = static_cast<uint16_t>((_h - 1) - y);
-  const uint8_t win[9] = {static_cast<uint8_t>(xs >> 8),
-                          static_cast<uint8_t>(xs & 0xFF),
-                          static_cast<uint8_t>(xe >> 8),
-                          static_cast<uint8_t>(xe & 0xFF),
-                          static_cast<uint8_t>(gateYStart >> 8),
-                          static_cast<uint8_t>(gateYStart & 0xFF),
-                          static_cast<uint8_t>(gateYEnd >> 8),
-                          static_cast<uint8_t>(gateYEnd & 0xFF),
-                          0x01};
-  bus.cmd(CMD_PARTIAL_IN);
-  bus.cmdData(CMD_PARTIAL_WINDOW, win, 9);
-  loadBankCdi(bus, 0xA9, 0x07, _cfg.preBwMid);
-  triggerRefresh(bus, /*turnOff=*/false);
-  bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8253X3Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {

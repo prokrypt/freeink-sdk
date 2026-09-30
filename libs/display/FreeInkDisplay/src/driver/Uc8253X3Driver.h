@@ -66,8 +66,6 @@ class Uc8253X3Driver : public PanelDriver {
                             RefreshMode fallback, bool turnOff) override;
   void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
                                   RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
-                             uint16_t h) override;
   GrayscaleCapabilities grayscaleCapabilities(
       GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Direct && !_cfg.directGray) return {};
