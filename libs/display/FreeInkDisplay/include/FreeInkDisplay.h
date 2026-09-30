@@ -544,6 +544,13 @@ void requestUc8179DuScrubNext();
 // controllers ignore it.
 void requestUc8179HalfAsDuScrubNext(uint8_t frames);
 Uc8179KbdTiming uc8179KbdTiming();
+// PROBE (read-only): the next refresh over a B/W screen first reads the OTP
+// with ROTP (RA2h) and logs its bank, check codes, temperature boundaries,
+// command defaults and every temperature range's voltage/VCOM header, then
+// resets the controller (that refresh runs as Full). Never writes the OTP.
+void requestUc8179OtpReadNext();
+// Summary of the last OTP read ("" before one).
+const char* uc8179OtpReport();
 #if FREEINK_UC8179_PANEL_TEMP
 // Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
 // a refresh at most once a minute; false until the first sample (or on other

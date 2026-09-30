@@ -183,6 +183,11 @@ void setUc8179KbdExperiment(const Uc8179KbdExperiment* experiment) {
 
 void requestUc8179HalfNext() { gHalfNext = true; }
 
+bool gOtpReadNext = false;
+char gOtpReport[640] = "";
+void requestUc8179OtpReadNext() { gOtpReadNext = true; }
+const char* uc8179OtpReport() { return gOtpReport; }
+
 void requestUc8179DuScrubNext() { gDuScrubNext = true; }
 
 void requestUc8179HalfAsDuScrubNext(const uint8_t frames) { gHalfScrubFrames = frames; }
@@ -468,8 +473,78 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
   _spiPlanes++;
 }
 
+// PROBE: ROTP (RA2h, UC8179c datasheet p.37) streams the OTP from address 0
+// on each read; no VPP, no program mode, so nothing is written. The layout is
+// p.47 (banks at 0x000/0xC00, check code 0xA5), p.50 (command defaults) and
+// p.51 (each TR: rate/VG, VDH, VDL, VDHR, XON, VCOM_DC at +0..+5, 0xF7 apart).
+// One extra leading byte is read in case the chip sends a dummy first.
+void Uc8179Driver::readOtpProbe(EpdBus& bus) {
+  constexpr uint32_t kLen = 0x1800 + 1;
+  auto* otp = static_cast<uint8_t*>(heap_caps_malloc(kLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (otp == nullptr) {
+    LOG_ERR("EPD", "8179 OTP read: no buffer");
+    return;
+  }
+  bus.waitBusy(" 8179_otp_ready");
+  bus.cmd(0xA2);
+  bool ok = true;
+  for (uint32_t i = 0; i < kLen && ok; i += 255) {
+    ok = bus.readData(otp + i, static_cast<uint8_t>(kLen - i < 255 ? kLen - i : 255));
+  }
+  // Leave read mode the way the datasheet leaves program mode: a hardware reset.
+  if (_isScreenOn) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" 8179_otp_POF");
+    _isScreenOn = false;
+  }
+  bus.reset(50);
+  initController(bus);
+  _directGrayConfigured = false;
+  _needFullClear = true;
+  _oldPlaneValid = false;
+  if (!ok) {
+    LOG_ERR("EPD", "8179 OTP read skipped (shared SPI bus)");
+    free(otp);
+    return;
+  }
+  const uint32_t skip = otp[0] == 0xA5 ? 0 : (otp[1] == 0xA5 || otp[1 + 0xC00] == 0xA5 ? 1 : 0);
+  const uint8_t* o = otp + skip;
+  const uint32_t bank = o[0xC00] == 0xA5 ? 0xC00 : 0;
+  LOG_INF("EPD", "8179 OTP raw0 %02X %02X, dummy %u, check %02X/%02X, bank %u", otp[0], otp[1],
+          static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u);
+  for (uint32_t b = 0; b <= 0xC00; b += 0xC00) {
+    char line[160];
+    int n = snprintf(line, sizeof(line), "8179 OTP bank%u 000-01E:", b ? 1u : 0u);
+    for (uint32_t a = 0; a <= 0x1E && n < static_cast<int>(sizeof(line)) - 3; ++a) {
+      n += snprintf(line + n, sizeof(line) - n, " %02X", o[b + a]);
+    }
+    LOG_INF("EPD", "%s", line);
+    LOG_INF("EPD", "8179 OTP bank%u rev prod %02X%02X%02X lut %02X%02X%02X", b ? 1u : 0u, o[b + 0xBDD], o[b + 0xBDE],
+            o[b + 0xBDF], o[b + 0xBE0], o[b + 0xBE1], o[b + 0xBE2]);
+    for (uint32_t tr = 0; tr < 12; ++tr) {
+      const uint8_t* h = o + b + 0x49 + tr * 0xF7;
+      LOG_INF("EPD", "8179 OTP bank%u TR%02u: %02X %02X %02X %02X %02X %02X %02X  VDH %02X VDL %02X VCOM %02X",
+              b ? 1u : 0u, static_cast<unsigned>(tr), h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[1] & 0x3F,
+              h[2] & 0x3F, h[5] & 0x7F);
+    }
+  }
+  int n = snprintf(gOtpReport, sizeof(gOtpReport), "dummy=%u check=%02X/%02X bank=%u TR(VDH/VDL/VCOM):",
+                   static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u);
+  for (uint32_t tr = 0; tr < 12 && n < static_cast<int>(sizeof(gOtpReport)) - 16; ++tr) {
+    const uint8_t* h = o + bank + 0x49 + tr * 0xF7;
+    n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, " %u:%02X/%02X/%02X", static_cast<unsigned>(tr),
+                  h[1] & 0x3F, h[2] & 0x3F, h[5] & 0x7F);
+  }
+  free(otp);
+}
+
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   gUploadStartMs = millis();
+  // Only over a B/W screen: the reset forces a Full, never allowed after gray.
+  if (gOtpReadNext && !_directGrayOnPanel) {
+    gOtpReadNext = false;
+    readOtpProbe(bus);
+  }
   if (gHalfNext && mode == RefreshMode::Fast) {
     gHalfNext = false;
     mode = RefreshMode::Half;
