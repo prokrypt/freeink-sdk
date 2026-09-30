@@ -115,23 +115,24 @@ constexpr lutbalance::LutSet makeDuLuts(const uint8_t frames) {
   return s;
 }
 
-// Smooth gray exit paint: held black pixels (KK, black in both frames) were
-// never driven and faded over many turns (status bar, user 10:24 9/30); a full
-// complement re-drive blinked every turn (user pick 2, 10:55). Instead KK gets
-// a short balanced nudge, n frames to white then n to black, at the end of the
-// paint so it lands with the other pixels' final push. Same total length as
-// the other rows: no added time. ponytail: 3 frames is a guess; raise it if the
-// fade persists, lower it if the nudge shows.
-constexpr uint8_t kHeldBlackNudgeFrames = 3;
-constexpr lutbalance::LutSet makeDuNudgeLuts(const uint8_t frames) {
+// Smooth gray paint: held pixels (WW, KK) are otherwise never driven, so held
+// blacks faded (status bar, user 10:24 9/30) and held whites dirtied. They get
+// a balanced re-drive that ends on their own color, n frames away then n back,
+// at the end of the paint so it lands with the other pixels' final push. Every
+// row stays 2 x frames long: no added time. ponytail: n=8 is a guess (3 did not
+// stop the fade, a full 24+24 blinked); lower it if the re-drive shows.
+constexpr uint8_t kHeldRedriveFrames = 8;
+constexpr lutbalance::LutSet makeDuRedriveLuts(const uint8_t frames) {
   lutbalance::LutSet s = makeDuLuts(frames);
-  const uint8_t n = frames < kHeldBlackNudgeFrames ? frames : kHeldBlackNudgeFrames;
-  uint8_t* kk = s.row[lutbalance::Kk];
-  kk[0] = 0x09;  // A ground, B ground, C 10 VDL (white), D 01 VDH (black)
-  kk[1] = frames;
-  kk[2] = static_cast<uint8_t>(frames - n);
-  kk[3] = n;
-  kk[4] = n;
+  const uint8_t n = frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames;
+  s.row[lutbalance::Kk][0] = 0x09;  // A, B ground; C 10 VDL (white), D 01 VDH (black)
+  s.row[lutbalance::Ww][0] = 0x06;  // A, B ground; C 01 VDH (black), D 10 VDL (white)
+  for (const uint8_t r : {lutbalance::Ww, lutbalance::Kk}) {
+    s.row[r][1] = static_cast<uint8_t>(frames - n);
+    s.row[r][2] = static_cast<uint8_t>(frames - n);
+    s.row[r][3] = n;
+    s.row[r][4] = n;
+  }
   return s;
 }
 
@@ -141,6 +142,23 @@ void writeLutSet(EpdBus& bus, const lutbalance::CheckedLuts& luts) {
     bus.cmd(static_cast<uint8_t>(0x20 + r));
     bus.data(luts.row(r), GRAY_LUT_LEN);
   }
+}
+
+// Register LUTs (PSR REG=1) drive with the PWR/VCOM_DC registers; OTP waveforms
+// carry their own voltages and VCOM per temperature range (UC8179c datasheet,
+// LUT format in OTP). After a reset these registers hold VDH/VDL +-14 V and
+// VCOM -0.10 V (R01h/R82h defaults), not the panel's +-15 V / -2.00 V from the
+// OEM gray_full packet, so every register-LUT refresh loads the packet's values.
+void writeRegisterLutPower(EpdBus& bus) {
+  const auto* config = kUc8179DirectGrayConfig;
+  bus.cmd(0x01);
+  bus.data(0x17);
+  bus.data(static_cast<uint8_t>(config[0] & 7));
+  bus.data(static_cast<uint8_t>(config[1] & 0x3F));
+  bus.data(static_cast<uint8_t>(config[2] & 0x3F));
+  bus.data(static_cast<uint8_t>(config[3] & 0x3F));
+  bus.cmd(0x82);
+  bus.data(config[5]);
 }
 
 // EXPERIMENT (test/kbd-uc8179): state set by the app between refreshes.
@@ -209,6 +227,12 @@ bool coldPanel(int8_t& celsius) {
   (void)celsius;
   return false;
 #endif
+}
+
+// Register-LUT DU frames get a third more on a cold panel (slower particles).
+uint8_t coldScaledFrames(const uint8_t frames) {
+  int8_t celsius = 0;
+  return coldPanel(celsius) ? static_cast<uint8_t>(frames + frames / 3) : frames;
 }
 }  // namespace
 
@@ -330,17 +354,10 @@ void Uc8179Driver::configureDirectGrayscale(EpdBus& bus) {
   bus.data(static_cast<uint8_t>((config[0] & 8) | (config[1] >> 6)));
   bus.cmd(0x30);
   bus.data(static_cast<uint8_t>(config[0] >> 4));
-  bus.cmd(0x01);
-  bus.data(0x17);
-  bus.data(static_cast<uint8_t>(config[0] & 7));
-  bus.data(static_cast<uint8_t>(config[1] & 0x3F));
-  bus.data(static_cast<uint8_t>(config[2] & 0x3F));
-  bus.data(static_cast<uint8_t>(config[3] & 0x3F));
+  writeRegisterLutPower(bus);
   bus.cmd(0x2A);
   bus.data(static_cast<uint8_t>(config[2] & 0xC0));
   bus.data(config[4]);
-  bus.cmd(0x82);
-  bus.data(config[5]);
   bus.cmdData2(CMD_VCOM_DATA_INTERVAL, _cfg.cdiActive, CDI_INTERVAL);
   _directGrayConfigured = true;
 }
@@ -485,8 +502,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   uint8_t halfScrubFrames = mode == RefreshMode::Half ? gHalfScrubFrames : 0;
   gHalfScrubFrames = 0;
   if (halfScrubFrames) {
-    int8_t celsius = 0;
-    if (coldPanel(celsius)) halfScrubFrames = static_cast<uint8_t>(halfScrubFrames + halfScrubFrames / 3);
+    halfScrubFrames = coldScaledFrames(halfScrubFrames);
     mode = RefreshMode::Fast;
     LOG_DBG("EPD", "8179: Half as DU scrub, %u frames", static_cast<unsigned>(halfScrubFrames));
   }
@@ -513,8 +529,8 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // B/W base and _grayMask its gray pixels. Pure B/W pixels are at their base,
   // so they get their true OLD (hold or a real transition); only gray pixels
   // get the target's complement. Built here, before _grayBase is overwritten.
-  // Smooth gray never swings held pixels; held blacks get the KK nudge
-  // (makeDuNudgeLuts) instead of a full re-drive.
+  // Smooth gray never swings held pixels; they get the short re-drive in
+  // makeDuRedriveLuts instead.
   const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
                               fb != nullptr;
   if (selectivePaint) {
@@ -564,7 +580,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       streamPlane(bus, CMD_DTM1, fb, true);
     }
     streamPlane(bus, CMD_DTM2, fb);
-    _scrubLutFrames = _smoothGray && !_paintForGrayBase ? 36 : 24;
+    _scrubLutFrames = coldScaledFrames(_smoothGray && !_paintForGrayBase ? 36 : 24);
     _complementOldPlane = true;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
@@ -600,7 +616,12 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
 
-  _scrubLutFrames = halfScrubFrames;
+  // A smooth gray base over a B/W panel (the last gray pass was cancelled)
+  // takes the balanced DU LUT on the true OLD plane, like the paint, not OTP
+  // Fast, whose one-way rows can't be gated and leave new text gray under the
+  // held gray pass. Same time as a regular smooth turn's paint.
+  const bool smoothBase = _smoothGray && _paintForGrayBase && fast && !duScrub && !gExpActive;
+  _scrubLutFrames = smoothBase ? coldScaledFrames(24) : halfScrubFrames;
   _complementOldPlane = duScrub;
   startBwRefresh(bus, fast);
   _scrubLutFrames = 0;
@@ -642,11 +663,12 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     // A DU scrub loads DTM1 with the target's complement, so the OLD plane is
     // not the pixel's real state and the set must balance per row (Absolute).
     lutbalance::LutSet storage;
-    // Only the smooth gray paint has true-OLD held blacks (KK); a full DU scrub
-    // complements every pixel, so the nudge row is unused there.
+    // Smooth gray paints and bases re-drive held pixels (WW, KK); a full DU
+    // scrub complements every pixel, so those rows are unused there.
+    writeRegisterLutPower(bus);
     writeLutSet(bus,
-                _complementOldPlane && _smoothGray
-                    ? lutbalance::checkedGenerator<makeDuNudgeLuts, lutbalance::Policy::Absolute>(frames, storage)
+                _smoothGray && _scrubLutFrames
+                    ? lutbalance::checkedGenerator<makeDuRedriveLuts, lutbalance::Policy::Absolute>(frames, storage)
                 : _complementOldPlane
                     ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
                     : lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Transition>(frames, storage));
