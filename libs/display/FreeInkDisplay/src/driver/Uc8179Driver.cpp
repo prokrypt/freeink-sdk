@@ -345,15 +345,34 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
   displayFinish(bus, fb);
 }
 
+// Direct gray drives every pixel absolutely from any prior state, so a B/W
+// base under the next gray pass over direct gray is only a second flash (the
+// balanced exit paint). Keep the gray on the panel, the controller in its
+// direct-gray config, and hand the base to the plane conversion alone. If the
+// gray pass is then cancelled, the next refresh still runs the exit paint.
+bool Uc8179Driver::skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback) {
+  if (!_directGrayOnPanel || fallback != RefreshMode::Fast || _grayBase == nullptr) return false;
+  memcpy(_grayBase, fb, _bufferSize);
+  _grayBaseValid = true;
+  _absoluteInput = false;
+  _directGrayPass = false;
+  _directGrayPlanes = 0;
+  _absoluteGrayPlanes = false;
+  LOG_DBG("EPD", "8179: gray base kept on direct gray, no B/W refresh");
+  return true;
+}
+
 void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
   syncStaleOldPlane(bus);
   if (!fb) return;
+  if (skipBaseOverDirectGray(fb, fallback)) return;
   display(bus, fb, nullptr, fallback, turnOff);
 }
 
 bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
   syncStaleOldPlane(bus);
   if (!fb) return false;
+  if (skipBaseOverDirectGray(fb, fallback)) return false;
   // Same Overlay setup as beginGrayscale().
   _absoluteInput = false;
   _directGrayPass = false;

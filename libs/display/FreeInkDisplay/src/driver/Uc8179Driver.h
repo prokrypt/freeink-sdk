@@ -132,6 +132,7 @@ class Uc8179Driver : public PanelDriver {
   // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
+  bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
 
