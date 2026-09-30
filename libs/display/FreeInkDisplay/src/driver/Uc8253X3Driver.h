@@ -29,7 +29,7 @@ struct Uc8253LutBank {
 };
 
 struct Uc8253X3Config {
-  Uc8253LutBank normal;    // condition-pass / settle (CDI 0xA9)
+  Uc8253LutBank normal;    // unused by the default flow (condition passes removed)
   Uc8253LutBank half;      // scrub (CDI 0xA9)
   Uc8253LutBank fast;      // turbo differential (CDI 0x29)
   Uc8253LutBank full;      // OEM full / factory (CDI 0x29)
@@ -113,7 +113,6 @@ private:
   bool _directGrayOnPanel = false;
   uint8_t _initialFullSyncsRemaining = 0;
   bool _forceFullSyncNext = false;
-  uint8_t _forcedConditionPassesNext = 0;
   struct GrayState {
     bool lastBaseWasPartial = false;
     bool lsbValid = false;

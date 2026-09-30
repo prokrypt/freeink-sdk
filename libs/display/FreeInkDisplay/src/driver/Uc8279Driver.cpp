@@ -125,7 +125,6 @@ void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
                                 const uint8_t *prev, RefreshMode mode,
                                 bool turnOff) {
-  const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
   _directGrayPass = false;
   (void)prev; // single-buffer: DTM1 holds the previous frame from
@@ -142,25 +141,6 @@ bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
   // request with a baseline.
   const bool useGc = (mode != RefreshMode::Fast) || !_oldPlaneValid ||
                      _forceFullSyncNext || _initialFullsRemaining > 0;
-
-  if (paintDestination) {
-    grayWindowIn(bus);
-    bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
-    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
-    bus.cmd(CMD_VCOM_DATA_INTERVAL);
-    bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-    loadBank(bus, kUc8279X3_BwDu);
-    if (!_isScreenOn) {
-      bus.cmd(CMD_POWER_ON);
-      bus.waitBusy(" 8279_PON");
-      _isScreenOn = true;
-    }
-    bus.cmd(CMD_DISPLAY_REFRESH);
-    bus.waitBusy(" 8279_BW_TARGET_DRF");
-    bus.cmd(CMD_PARTIAL_OUT);
-  }
 
   bus.cmd(CMD_PARTIAL_IN);  // enter the full-panel PTL window set in init
 
@@ -179,7 +159,10 @@ bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
   // to the AA pre-conditioning pass (FUN_42015944), not plain GC/DU refreshes.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-  loadBank(bus, useGc ? kUc8279X3_BwGc : kUc8279X3_BwDu);
+  // Unknown OLD plane (first paint, leaving direct or absolute gray): the
+  // absolute scrub, not GC from a white seed or a complement-OLD DU paint, both
+  // of which re-run one-way transitions on pixels already at their target.
+  loadBank(bus, !_oldPlaneValid ? kUc8279X3_BwScrub : useGc ? kUc8279X3_BwGc : kUc8279X3_BwDu);
   _pendingUsedGc = useGc;
 
   if (!_isScreenOn) {

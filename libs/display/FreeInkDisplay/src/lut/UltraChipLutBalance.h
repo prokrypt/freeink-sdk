@@ -159,5 +159,35 @@ constexpr CheckedLuts vendorTable() {
   return CheckedLuts(&S);
 }
 
+// UC8279 rows use 7-byte groups [?, P1..P4, ?, ?], P = rail << 6 | frames
+// (rail 01 VDH, 10 VDL, 00 GND). The extra bytes are not modeled as repeats,
+// matching Uc8279X4Driver's Xth4 rebalance. VCOM rows must not drive.
+constexpr int32_t uc8279RowNet(const uint8_t* row, size_t len) {
+  int32_t net = 0;
+  for (size_t g = 0; g + 7 <= len; g += 7) {
+    for (size_t i = 1; i <= 4; ++i) {
+      const uint8_t rail = static_cast<uint8_t>(row[g + i] >> 6);
+      const int32_t frames = row[g + i] & 0x3F;
+      if (rail == 0x01) net += frames;
+      if (rail == 0x02) net -= frames;
+      if (rail == 0x03 && frames != 0) return INT32_MIN;  // unmodeled rail
+    }
+  }
+  return net;
+}
+
+// Command-prefixed UC8279 bank (5 x 43, byte 0 = register R20h..R24h).
+constexpr bool uc8279Balanced(const uint8_t (&bank)[5][43], Policy p) {
+  int32_t net[kRows] = {};
+  for (uint8_t r = 0; r < kRows; ++r) {
+    if (bank[r][0] != 0x20 + r) return false;
+    net[r] = uc8279RowNet(&bank[r][1], 42);
+    if (net[r] == INT32_MIN) return false;
+  }
+  if (net[Vcom] != 0) return false;
+  if (p == Policy::Absolute) return net[Ww] == 0 && net[Kw] == 0 && net[Wk] == 0 && net[Kk] == 0;
+  return net[Ww] == 0 && net[Kk] == 0 && net[Kw] + net[Wk] == 0;
+}
+
 }  // namespace lutbalance
 }  // namespace freeink
