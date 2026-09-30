@@ -777,6 +777,43 @@ void testListRevealActionTargetsOneRow() {
   CHECK_EQ(hits.route(tap).action, 5);
 }
 
+void testListTrailingIconSitsBeforeValue() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<8> hits;
+  Frame<8> frame(draw, device, input, hits);
+  static const uint8_t iconBits[72]{};
+  ListItem items[2]{};
+  items[0].label = "Feed";
+  items[0].value = ">";
+  items[1].label = "Book";
+  for (auto& item : items) {
+    item.icon = BitmapRef{iconBits, 24, 24};
+    item.iconTrailing = true;
+  }
+  ListProps props;
+  props.items = items;
+  props.count = 2;
+  props.rowHeight = 40;
+  props.valueInset = 8;
+  props.scrollIndicator = false;
+  list(frame, Rect{0, 0, 200, 80}, props);
+
+  int16_t iconRight[2] = {-1, -1}, valueX = -1, labelRight[2] = {-1, -1};
+  for (size_t i = 0; i < draw.opCount; ++i) {
+    const auto& op = draw.ops[i];
+    const int row = op.rect.y < 40 ? 0 : 1;
+    if (op.kind == FakeDrawTarget::Op::Bitmap) iconRight[row] = op.rect.right();
+    if (op.kind == FakeDrawTarget::Op::Text && op.align == TextAlign::Right) valueX = op.rect.x;
+    else if (op.kind == FakeDrawTarget::Op::Text) labelRight[row] = op.rect.right();
+  }
+  CHECK(valueX > 0);
+  CHECK(iconRight[0] > 100 && iconRight[0] <= valueX);           // right side, before ">"
+  CHECK(iconRight[1] > 100 && iconRight[1] <= 200 - 8 - 8);      // no value: inset like one
+  CHECK(labelRight[0] < iconRight[0] - 24 && labelRight[1] < iconRight[1] - 24);  // label stops short
+}
+
 void testListClampsBadTopIndex() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -5593,6 +5630,7 @@ int main() {
   testListHelpers();
   testListVirtualization();
   testListRevealActionTargetsOneRow();
+  testListTrailingIconSitsBeforeValue();
   testListClampsBadTopIndex();
   testListItemsWindow();
   testListRowProvider();
