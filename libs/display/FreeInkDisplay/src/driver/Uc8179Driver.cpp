@@ -11,6 +11,9 @@
 #if defined(BOARD_HAS_PSRAM)
 #include <esp_heap_caps.h>
 #endif
+#ifndef SIMULATOR
+#include <Preferences.h>
+#endif
 
 namespace freeink {
 namespace {
@@ -399,11 +402,62 @@ void Uc8179Driver::restoreBwConfiguration(EpdBus& bus) {
 // Read once at begin(): the 12-byte head for the boundaries, then only up to
 // the last used TR header (1.25 KB on .67; the whole 2 KB took 117 ms with
 // 1 us bit waits, log 20260930T182500Z-c2123894-postflash L531-532).
+// The OTP never changes, so the table is cached in NVS after the first read
+// (user 18:28 9/30: not at every boot). Each boot reads only the 12-byte head
+// (<1 ms) and reuses the cache while its boundaries match. ponytail: a panel
+// swap with identical boundaries keeps the old VCOM until NVS is erased.
+namespace {
+struct OtpVcomCache {
+  uint8_t tb[11];
+  uint8_t vcom[12];
+  uint8_t trs;
+};
+}  // namespace
+
+bool Uc8179Driver::loadOtpVcomCache(const uint8_t* tb) {
+#ifndef SIMULATOR
+  Preferences prefs;
+  if (!prefs.begin("uc8179", /*readOnly=*/true)) return false;
+  OtpVcomCache c{};
+  const bool hit = prefs.getBytes("otpvcom", &c, sizeof(c)) == sizeof(c) && memcmp(c.tb, tb, sizeof(c.tb)) == 0 &&
+                   c.trs > 0 && c.trs <= sizeof(c.vcom);
+  prefs.end();
+  if (!hit) return false;
+  memcpy(_otpTb, c.tb, sizeof(_otpTb));
+  memcpy(_otpVcom, c.vcom, sizeof(_otpVcom));
+  _otpTrs = c.trs;
+  return true;
+#else
+  (void)tb;
+  return false;
+#endif
+}
+
+void Uc8179Driver::saveOtpVcomCache() const {
+#ifndef SIMULATOR
+  Preferences prefs;
+  if (!prefs.begin("uc8179", /*readOnly=*/false)) {
+    LOG_ERR("EPD", "8179 OTP VCOM: NVS cache not saved");
+    return;
+  }
+  OtpVcomCache c{};
+  memcpy(c.tb, _otpTb, sizeof(c.tb));
+  memcpy(c.vcom, _otpVcom, sizeof(c.vcom));
+  c.trs = _otpTrs;
+  prefs.putBytes("otpvcom", &c, sizeof(c));
+  prefs.end();
+#endif
+}
+
 void Uc8179Driver::readOtpVcom(EpdBus& bus) {
   const unsigned long startMs = millis();
   uint8_t head[12];
   bus.waitBusy(" 8179_otp_ready");
   bool ok = bus.cmdReadStream(0xA2, head, sizeof(head)) && head[0] == 0xA5;
+  if (ok && loadOtpVcomCache(head + 1)) {
+    LOG_INF("EPD", "8179 OTP VCOM from NVS cache, %lu ms", millis() - startMs);
+    return;
+  }
   unsigned trs = 0;
   for (; ok && trs < 11 && head[1 + trs] != 0x7F; ++trs) {
     ok = trs == 0 || static_cast<int8_t>(head[1 + trs]) > static_cast<int8_t>(head[trs]);
@@ -422,6 +476,7 @@ void Uc8179Driver::readOtpVcom(EpdBus& bus) {
     LOG_ERR("EPD", "8179 OTP VCOM: unreadable, using the gray packet's");
     return;
   }
+  saveOtpVcomCache();
   char line[112];
   int n = snprintf(line, sizeof(line), "8179 OTP VCOM %lu ms (TB C: VCOM_DC):", millis() - startMs);
   for (unsigned t = 0; t < _otpTrs && n < static_cast<int>(sizeof(line)) - 12; ++t) {
