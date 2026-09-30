@@ -348,7 +348,6 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
   syncStaleOldPlane(bus);
   if (!fb) return;
-  _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
   display(bus, fb, nullptr, fallback, turnOff);
 }
 
@@ -360,7 +359,6 @@ bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, Ref
   _directGrayPass = false;
   _directGrayPlanes = 0;
   // Same routing as displayGrayscaleBase(); displayStart() leaves its refresh pending.
-  _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
   return displayStart(bus, fb, nullptr, fallback, turnOff);
 }
 
@@ -426,8 +424,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   syncStaleOldPlane(bus);
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
-  const bool grayBaseOverDirect = _grayBaseOverDirect && paintDestination;
-  _grayBaseOverDirect = false;
+  // After the balanced DU paint the panel shows the B/W target, so a Fast
+  // request is done: no OTP Full flash on top (menus, Home, the next page's base).
+  const bool paintIsRefresh = paintDestination && mode == RefreshMode::Fast && !halfScrubFrames;
   restoreBwConfiguration(bus);
   _absoluteInput = false;
   _directGrayPass = false;
@@ -475,9 +474,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     _complementOldPlane = false;
     bus.waitRefreshComplete(" 8179_BW_TARGET_DRF");
     bus.cmd(CMD_PARTIAL_OUT);
-    if (grayBaseOverDirect) {
-      // The page's direct-gray pass follows and drives every pixel absolutely,
-      // so the painted B/W target is the base: no OTP Full after it.
+    if (paintIsRefresh) {
       bus.cmdData2(CMD_VCOM_DATA_INTERVAL, _cfg.cdiIdle, CDI_INTERVAL);
       streamPlane(bus, CMD_DTM1, fb);
       _oldPlaneValid = true;
