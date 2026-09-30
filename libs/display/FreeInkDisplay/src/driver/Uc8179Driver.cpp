@@ -81,20 +81,6 @@ constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separatel
 constexpr uint8_t kDirectGrayOrder[lutbalance::kRows] = {0, 4, 2, 3, 1};
 constexpr lutbalance::LutSet kDirectGraySet = lutbalance::fromRows(kUltraChipDirectGray, kDirectGrayOrder);
 
-// The same set with the white (WW) and black (KK) level bytes grounded, frame
-// counts and repeats kept so the timing is unchanged. Used only when the B/W
-// base of this gray page is already on the panel: pure black/white pixels are
-// then at their target and hold, so only gray pixels move (no full-screen swing).
-constexpr lutbalance::LutSet makeDirectGrayHold() {
-  lutbalance::LutSet s = kDirectGraySet;
-  for (size_t g = 0; g < lutbalance::kRowBytes; g += lutbalance::kGroupBytes) {
-    s.row[lutbalance::Ww][g] = 0;
-    s.row[lutbalance::Kk][g] = 0;
-  }
-  return s;
-}
-constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
-
 // Smooth gray (setSmoothGray): with the B/W base on the panel, every gray
 // pixel sits at black (the base is 0 for every non-white pixel). Instead of
 // the full swing, give it a short push toward black (invisible, it is already
@@ -934,7 +920,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // path already built the same absolute selectors (DTM1 plane0, DTM2 plane1)
   // the direct rows are mapped to, so only the waveform changes.
   // Overlay planes derive from the B/W base (black/white pixels == base), so
-  // when that base is on the panel the hold set moves only the gray pixels.
+  // with that base on the panel smooth gray may hold them. Direct gray always
+  // swings black/white too: the base is an OTP Fast transition, and holding
+  // its result kept the old page as ghosts in the image's white/black areas
+  // and left first-page text gray (log 20260930T082014Z-2557c0fd L4067-4077).
   const bool overlayPlanes = !_directGrayPass && _absoluteGrayPlanes;
   const bool holdBw = overlayPlanes && _bwBaseShown;
   if (!_directGrayPass) {
@@ -960,9 +949,6 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     if (holdBw && _smoothGray) {
       writeLutSet(bus, lutbalance::checkedTable<kSmoothGraySet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
-    } else if (holdBw) {
-      writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
-      LOG_DBG("EPD", "8179: direct gray, B/W pixels hold");
     } else {
       writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
     }
