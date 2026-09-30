@@ -43,8 +43,8 @@ const Uc8253X3Config& uc8253X3DefaultConfig() {
       kUltraChipDirectGray[3], kUltraChipDirectGray[1]};
   static const Uc8253X3Config cfg = {
       {lut_x3_vcom_normal, lut_x3_ww_normal, lut_x3_bw_normal, lut_x3_wb_normal, lut_x3_bb_normal},
-      // Scrub: _full WW row for white targets, _full BB for black (balanced, gated).
-      {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_ww_full, lut_x3_bb_full, lut_x3_bb_full},
+      // Scrub: WW row for white targets, BB for black (balanced, gated).
+      {lut_x3_vcom_half, lut_x3_ww_half, lut_x3_ww_half, lut_x3_bb_half, lut_x3_bb_half},
       {lut_x3_vcom_fast, lut_x3_ww_fast, lut_x3_bw_fast, lut_x3_wb_fast, lut_x3_bb_fast},
       {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_bw_full, lut_x3_wb_full, lut_x3_bb_full},
       {lut_x3_vcom_gc, lut_x3_ww_gc, lut_x3_bw_gc, lut_x3_wb_gc, lut_x3_bb_gc},
@@ -212,7 +212,10 @@ bool Uc8253X3Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
     // Balanced scrub (every row nets zero, DTM1 ignored). The _full transition
     // bank from a white DTM1 seed ran W->K (+24) on every held black each time,
     // and leaving direct gray needs no separate destination paint before it.
-    loadBankCdi(bus, 0x29, 0x07, _cfg.half);
+    // Full length (62 frames) from the _full rows; Half uses the 31-frame _half.
+    static constexpr Uc8253LutBank kFullScrub = {lut_x3_vcom_full, lut_x3_ww_full, lut_x3_ww_full, lut_x3_bb_full,
+                                                 lut_x3_bb_full};
+    loadBankCdi(bus, 0x29, 0x07, kFullScrub);
     bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
   } else if (doHalfSync) {
     // Balanced scrub: WW==BW, WB==BB -> drive every pixel to target ignoring DTM1.
