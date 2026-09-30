@@ -507,7 +507,8 @@ void Uc8179Driver::readOtpProbe(EpdBus& bus) {
   for (uint32_t i = 0; i < kLen; ++i) diffs += a[i] != b[i];
   const uint32_t skip = (a[0] == 0xA5 || a[0xC00] == 0xA5) ? 0 : ((a[1] == 0xA5 || a[0xC01] == 0xA5) ? 1 : 0);
   const uint8_t* o = a + skip;
-  const uint32_t bank = o[0xC00] == 0xA5 ? 0xC00 : 0;
+  // p.49: bank0 when its check code is 0xA5, else bank1.
+  const uint32_t bank = o[0] == 0xA5 ? 0 : 0xC00;
   LOG_INF("EPD", "8179 OTP raw %02X %02X, dummy %u, check %02X/%02X, bank %u, read2 diffs %u", a[0], a[1],
           static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u, static_cast<unsigned>(diffs));
   for (uint32_t base = 0; base <= 0xC00; base += 0xC00) {
@@ -534,8 +535,17 @@ void Uc8179Driver::readOtpProbe(EpdBus& bus) {
   liveC = gPanelTempC;
 #endif
   const uint8_t* bb = o + bank;
-  int n = snprintf(gOtpReport, sizeof(gOtpReport), "dummy=%u bank=%u diffs=%u TR@30C=%u TR@90C=%u TR@live(%dC)=%s",
-                   static_cast<unsigned>(skip), bank ? 1u : 0u, static_cast<unsigned>(diffs), otpTr(bb, 0x1E),
+  // Sanity: a counter that restarts, or a floating bus, reads one repeated byte.
+  bool allSame = true;
+  for (uint32_t i = 1; i < 0x100 && allSame; ++i) allSame = o[i] == o[0];
+  bool tbOk = true;
+  for (unsigned t = 1; t < 11 && bb[1 + t] != 0x7F; ++t) {
+    tbOk = tbOk && static_cast<int8_t>(bb[1 + t]) >= static_cast<int8_t>(bb[t]);
+  }
+  const bool sane = diffs == 0 && !allSame && tbOk && bb[0] == 0xA5;
+  int n = snprintf(gOtpReport, sizeof(gOtpReport), "%sdummy=%u bank=%u diffs=%u TR@30C=%u TR@90C=%u TR@live(%dC)=%s",
+                   sane ? "" : "ERR:insane ", static_cast<unsigned>(skip), bank ? 1u : 0u, static_cast<unsigned>(diffs),
+                   otpTr(bb, 0x1E),
                    otpTr(bb, 0x5A), static_cast<int>(liveC), live ? "" : "?");
   if (live) n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, "%u", otpTr(bb, liveC));
   n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, " VDH/VDL/VCOM:");
