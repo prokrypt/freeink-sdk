@@ -30,9 +30,9 @@ struct ListItem {
   // It shares the row's logical index and interaction value. Kept last so
   // existing aggregate initializers remain source-compatible.
   const char *sectionHeading = nullptr;
-  // LTR only: draw the icon at the row's trailing edge, just before the value
-  // slot, instead of before the label (a status mark rather than a row icon).
-  bool iconTrailing = false;
+  // Draw the icon inside the row's side padding (leading edge), scaled down
+  // to fit, so the label and value do not move: a status mark, not a row icon.
+  bool iconInMargin = false;
 };
 
 struct ListNav;
@@ -455,14 +455,10 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
   const int16_t labelLh = target.lineHeight(props.labelText.font);
-  const BitmapRef icon = item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
+  const BitmapRef icon = item.iconInMargin ? BitmapRef{} : item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
-  // A trailing icon with no value slot is inset from the edge like a value.
-  const int16_t iconInset = icon && item.iconTrailing && !props.rtl && !item.toggle && !item.value
-                                ? props.valueInset
-                                : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
-                                                   (icon ? iconSize + props.textGap + iconInset : 0));
+                                                   (icon ? iconSize + props.textGap : 0));
   result.labelWidth = contentWidth;
   if (item.toggle) {
     result.valueWidth = props.toggleWidth < 18 ? 18 : props.toggleWidth;
@@ -777,8 +773,17 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
     const BitmapRef icon =
         item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
-    const bool trailingIcon = icon && item.iconTrailing && !props.rtl;
-    if (icon && !trailingIcon) {
+    if (icon && item.iconInMargin) {
+      int16_t markSize = props.iconSize > 0 ? props.iconSize
+                                            : static_cast<int16_t>(icon.width);
+      if (markSize > sidePad) markSize = sidePad;
+      const int16_t markX = props.rtl ? content.right() : row.x;
+      frame.target().bitmap(
+          Rect{static_cast<int16_t>(markX + (sidePad - markSize) / 2),
+               static_cast<int16_t>(content.y + (content.height - markSize) / 2),
+               markSize, markSize},
+          icon, BitmapMode::Contain, style.foreground);
+    } else if (icon) {
       const int16_t iconSize = props.iconSize > 0
                                    ? props.iconSize
                                    : static_cast<int16_t>(icon.width);
@@ -867,25 +872,6 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         labelX = static_cast<int16_t>(band.x + band.width - availW);
     }
 
-    // Trailing icon: left of the value/toggle slot, or inset from the edge
-    // like a value when there is none. measureListRow already took its width
-    // out of labelWidth; the subtitle stops short of it too.
-    int16_t subtitleW = content.width;
-    if (trailingIcon) {
-      const int16_t iconSize = props.iconSize > 0
-                                   ? props.iconSize
-                                   : static_cast<int16_t>(icon.width);
-      const int16_t iconX = static_cast<int16_t>(
-          band.x + availW - iconSize -
-          (item.toggle || item.value ? 0 : props.valueInset));
-      frame.target().bitmap(
-          Rect{iconX,
-               static_cast<int16_t>(content.y + (content.height - iconSize) / 2),
-               iconSize, iconSize},
-          icon, BitmapMode::Contain, style.foreground);
-      subtitleW = static_cast<int16_t>(iconX - props.textGap - content.x);
-    }
-
     availW = layout.labelWidth;
     if (props.rtl)
       labelX = static_cast<int16_t>(band.right() - availW);
@@ -897,7 +883,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                           labelStyle);
       frame.target().text(
           Rect{content.x, static_cast<int16_t>(band.y + band.height),
-               subtitleW, subH},
+               content.width, subH},
           item.subtitle,
           textStyleWithForeground(props.subtitleText, style.foreground));
     } else {

@@ -777,41 +777,39 @@ void testListRevealActionTargetsOneRow() {
   CHECK_EQ(hits.route(tap).action, 5);
 }
 
-void testListTrailingIconSitsBeforeValue() {
-  FakeDrawTarget draw;
-  DeviceContext device = makeDevice();
-  InputSnapshot input;
-  InteractionBuffer<8> hits;
-  Frame<8> frame(draw, device, input, hits);
+void testListMarginIconLeavesRowInPlace() {
   static const uint8_t iconBits[72]{};
-  ListItem items[2]{};
-  items[0].label = "Feed";
-  items[0].value = ">";
-  items[1].label = "Book";
-  for (auto& item : items) {
-    item.icon = BitmapRef{iconBits, 24, 24};
-    item.iconTrailing = true;
+  int16_t labelX[2] = {-1, -1};
+  Rect mark{};
+  for (int pass = 0; pass < 2; ++pass) {
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<8> hits;
+    Frame<8> frame(draw, device, input, hits);
+    ListItem item{};
+    item.label = "Feed";
+    item.value = ">";
+    if (pass == 1) {
+      item.icon = BitmapRef{iconBits, 24, 24};
+      item.iconInMargin = true;
+    }
+    ListProps props;
+    props.items = &item;
+    props.count = 1;
+    props.rowHeight = 40;
+    props.sidePadding = 8;
+    props.scrollIndicator = false;
+    list(frame, Rect{0, 0, 200, 40}, props);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const auto& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Text && op.align != TextAlign::Right) labelX[pass] = op.rect.x;
+      if (op.kind == FakeDrawTarget::Op::Bitmap) mark = op.rect;
+    }
   }
-  ListProps props;
-  props.items = items;
-  props.count = 2;
-  props.rowHeight = 40;
-  props.valueInset = 8;
-  props.scrollIndicator = false;
-  list(frame, Rect{0, 0, 200, 80}, props);
-
-  int16_t iconRight[2] = {-1, -1}, valueX = -1, labelRight[2] = {-1, -1};
-  for (size_t i = 0; i < draw.opCount; ++i) {
-    const auto& op = draw.ops[i];
-    const int row = op.rect.y < 40 ? 0 : 1;
-    if (op.kind == FakeDrawTarget::Op::Bitmap) iconRight[row] = op.rect.right();
-    if (op.kind == FakeDrawTarget::Op::Text && op.align == TextAlign::Right) valueX = op.rect.x;
-    else if (op.kind == FakeDrawTarget::Op::Text) labelRight[row] = op.rect.right();
-  }
-  CHECK(valueX > 0);
-  CHECK(iconRight[0] > 100 && iconRight[0] <= valueX);           // right side, before ">"
-  CHECK(iconRight[1] > 100 && iconRight[1] <= 200 - 8 - 8);      // no value: inset like one
-  CHECK(labelRight[0] < iconRight[0] - 24 && labelRight[1] < iconRight[1] - 24);  // label stops short
+  CHECK(labelX[0] >= 8);
+  CHECK_EQ(labelX[1], labelX[0]);                      // label did not move
+  CHECK(mark.width == 8 && mark.x >= 0 && mark.right() <= 8);  // scaled into the padding
 }
 
 void testListClampsBadTopIndex() {
@@ -5630,7 +5628,7 @@ int main() {
   testListHelpers();
   testListVirtualization();
   testListRevealActionTargetsOneRow();
-  testListTrailingIconSitsBeforeValue();
+  testListMarginIconLeavesRowInPlace();
   testListClampsBadTopIndex();
   testListItemsWindow();
   testListRowProvider();
