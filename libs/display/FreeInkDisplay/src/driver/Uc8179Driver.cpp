@@ -715,13 +715,16 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // Sync the OLD plane (0x10) with the just-displayed frame so the NEXT partial
   // diffs against it (KW clears erased pixels -> no ghosting). This is the piece
   // that makes fast page turns clean.
-  // Always streamed, never left to CDI N2OCP: that copy is unverified, and a
-  // stale OLD plane makes the next OTP refresh (Half, exit frame) re-drive
-  // settled pixels one way.
+  // Keyboard DU frames may leave it to CDI N2OCP (0x29), which copies the
+  // full NEW plane to OLD after the refresh: verified on the X4 Pro panel by
+  // the Goodies N2OCP probe (log 20260930T094413Z-187d9a2c-n2ocp.txt). Only
+  // after a full-frame balanced DU refresh; every other refresh re-streams.
+  const bool skipResync = gExpActive && _pendingPartial && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut) &&
+                          (gKbdExp.flags & Uc8179KbdExperiment::SkipOldResync);
   gExpActive = false;
   const unsigned long syncStart = millis();
-  streamPlane(bus, CMD_DTM1, fb);
-  gKbdTiming.syncMs = static_cast<uint32_t>(millis() - syncStart);
+  if (!skipResync) streamPlane(bus, CMD_DTM1, fb);
+  gKbdTiming.syncMs = skipResync ? 0 : static_cast<uint32_t>(millis() - syncStart);
   _oldPlaneValid = true;
   _bwPlanesSynced = true;
   _needFullClear = false;
