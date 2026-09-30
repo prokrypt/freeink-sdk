@@ -218,6 +218,43 @@ bool EpdBus::readData(uint8_t* out, uint8_t len) {
   return true;
 }
 
+bool EpdBus::cmdReadStream(uint8_t cmd, uint8_t* out, uint32_t len) {
+  if (_coCs >= 0 || _pins.mosi < 0 || _pins.sclk < 0 || _pins.cs < 0 || _pins.dc < 0) return false;
+  SPI.end();
+  pinMode(_pins.mosi, OUTPUT);
+  pinMode(_pins.sclk, OUTPUT);
+  digitalWrite(_pins.sclk, LOW);
+  digitalWrite(_pins.dc, LOW);
+  digitalWrite(_pins.cs, LOW);
+  delayMicroseconds(1);
+  for (uint8_t bit = 0; bit < 8; ++bit) {
+    digitalWrite(_pins.mosi, (cmd & 0x80) ? HIGH : LOW);
+    delayMicroseconds(1);
+    digitalWrite(_pins.sclk, HIGH);
+    delayMicroseconds(1);
+    digitalWrite(_pins.sclk, LOW);
+    cmd = static_cast<uint8_t>(cmd << 1);
+  }
+  digitalWrite(_pins.dc, HIGH);
+  pinMode(_pins.mosi, INPUT_PULLUP);
+  delayMicroseconds(1);
+  for (uint32_t i = 0; i < len; ++i) {
+    uint8_t value = 0;
+    for (uint8_t bit = 0; bit < 8; ++bit) {
+      delayMicroseconds(1);
+      value = static_cast<uint8_t>((value << 1) | (digitalRead(_pins.mosi) == HIGH ? 1 : 0));
+      digitalWrite(_pins.sclk, HIGH);
+      delayMicroseconds(1);
+      digitalWrite(_pins.sclk, LOW);
+    }
+    out[i] = value;
+  }
+  digitalWrite(_pins.cs, HIGH);
+  pinMode(_pins.mosi, OUTPUT);
+  SPI.begin(_pins.sclk, _spiMiso, _pins.mosi, _pins.cs);
+  return true;
+}
+
 void EpdBus::beginTxn() {
   if (_coCs >= 0) {
     digitalWrite(_coCs, HIGH);
