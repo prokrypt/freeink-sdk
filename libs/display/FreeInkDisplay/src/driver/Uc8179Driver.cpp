@@ -95,23 +95,6 @@ constexpr lutbalance::LutSet makeDirectGrayHold() {
 }
 constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
 
-// Smooth gray (setSmoothGray): with the B/W base on the panel, every gray
-// pixel sits at black (the base is 0 for every non-white pixel). Instead of
-// the full swing, give it a short push toward black (invisible, it is already
-// there), then the same number of frames toward white: light 4+4, dark 2+2,
-// run twice (RP 1) like the OEM set. Every row nets zero; black and white hold.
-// Canonical row order (VCOM, black, light, dark, white), mapped like direct
-// gray. Levels: 01 VDH -> black, 10 VDL -> white. ponytail: light/dark frame
-// counts copy the final white phase of kUltraChipDirectGray; tune on the panel.
-constexpr uint8_t kSmoothGrayRows[lutbalance::kRows][lutbalance::kRowBytes] = {
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // VCOM: DC
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // black: hold
-    {0x5A, 0x02, 0x02, 0x02, 0x02, 0x01},  // light: black 2, black 2, white 2, white 2
-    {0x18, 0x02, 0x02, 0x02, 0x02, 0x01},  // dark: -, black 2, white 2, -
-    {0x00, 0x02, 0x02, 0x02, 0x02, 0x01},  // white: hold
-};
-constexpr lutbalance::LutSet kSmoothGraySet = lutbalance::fromRows(kSmoothGrayRows, kDirectGrayOrder);
-
 // Balanced DU register LUT: changing pixels get `frames` away from the target
 // (invisible: they are already there), then `frames` to it, so every row nets
 // zero. VCOM, WW and KK hold: unchanged pixels are not driven. Row:
@@ -386,7 +369,7 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 // direct-gray config, and hand the base to the plane conversion alone. If the
 // gray pass is then cancelled, the next refresh still runs the exit paint.
 bool Uc8179Driver::skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback) {
-  // Smooth gray needs the B/W base on the panel, so it keeps the base refresh.
+  // Smooth gray keeps the base refresh so the hold set runs (no full swing).
   if (_smoothGray || !_directGrayOnPanel || fallback != RefreshMode::Fast || _grayBase == nullptr) return false;
   memcpy(_grayBase, fb, _bufferSize);
   _grayBaseValid = true;
@@ -957,10 +940,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       _isScreenOn = true;
     }
     configureDirectGrayscale(bus);
-    if (holdBw && _smoothGray) {
-      writeLutSet(bus, lutbalance::checkedTable<kSmoothGraySet, lutbalance::Policy::Absolute>());
-      LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
-    } else if (holdBw) {
+    if (holdBw) {
       writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: direct gray, B/W pixels hold");
     } else {
