@@ -130,6 +130,8 @@ class Uc8179Driver : public PanelDriver {
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
   void readOtpVcom(EpdBus& bus);
+  bool loadOtpVcomCache(const uint8_t* tb);
+  void saveOtpVcomCache() const;
   uint8_t vcomDc();
   bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
