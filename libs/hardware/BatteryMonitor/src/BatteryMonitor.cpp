@@ -12,6 +12,7 @@
 #include <cmath>
 
 #if FREEINK_BATTERY_I2C_GAUGE
+#include <I2cBusLock.h>
 #include <Wire.h>
 #if FREEINK_DEVICE_WS397
 #include <Axp2101.h>
@@ -47,6 +48,7 @@ void ensureWire() {
 
 bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
   if (addr == 0) return false;
+  freeink::I2cBusLock bus(gaugeWire());
   ensureWire();
   TwoWire& w = gaugeWire();
   w.beginTransmission(addr);
@@ -61,6 +63,7 @@ bool readReg16(uint8_t addr, uint8_t reg, uint16_t& out) {
 
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
   if (addr == 0) return false;
+  freeink::I2cBusLock bus(gaugeWire());
   ensureWire();
   TwoWire& w = gaugeWire();
   w.beginTransmission(addr);
@@ -73,6 +76,7 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
 
 bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
   if (addr == 0) return false;
+  freeink::I2cBusLock bus(gaugeWire());
   ensureWire();
   TwoWire& w = gaugeWire();
   w.beginTransmission(addr);
