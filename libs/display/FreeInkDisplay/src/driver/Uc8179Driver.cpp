@@ -493,11 +493,15 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // B/W base and _grayMask its gray pixels. Pure B/W pixels are at their base,
   // so they get their true OLD (hold or a real transition); only gray pixels
   // get the target's complement. Built here, before _grayBase is overwritten.
+  // Smooth gray never swings held pixels, and black ones held for many turns
+  // faded lighter (the status bar, user 10:24 9/30), so there pixels black in
+  // both frames get the complement too: a balanced re-drive, ending on black.
   const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
                               fb != nullptr;
   if (selectivePaint) {
     for (uint32_t i = 0; i < _bufferSize; i++) {
-      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~_grayMask[i]) | (~fb[i] & _grayMask[i]));
+      const uint8_t redrive = static_cast<uint8_t>(_grayMask[i] | (_smoothGray ? ~(_grayBase[i] | fb[i]) : 0));
+      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~redrive) | (~fb[i] & redrive));
     }
   }
   _panelGrayValid = false;
