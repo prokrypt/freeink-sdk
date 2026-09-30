@@ -1,13 +1,14 @@
 #include "FrontlightManager.h"
 
 #if FREEINK_CAP_FRONTLIGHT
-#include "FrontlightManager.h"
-
 #include <M5Pm1.h>
 #include <Wire.h>
+
+#include "FrontlightManager.h"
 #ifdef FREEINK_FRONTLIGHT_LS
 #include <driver/gpio.h>
 #include <driver/ledc.h>
+
 #include <algorithm>
 // esp_sleep_sub_mode_config lives in a private IDF header (no public API exists
 // for balancing the refcounted RC_FAST keep-on the LEDC driver takes for
@@ -24,6 +25,19 @@
 #include <Logging.h>
 
 namespace {
+// Last applied duty, printed by flushLog() once it stops changing.
+struct AppliedLog {
+  uint32_t cool = UINT32_MAX;
+  uint32_t warm = UINT32_MAX;
+  uint32_t total = 0;
+  uint32_t changedMs = 0;
+  uint8_t brightness = 0;
+  uint8_t level = 0;
+  bool pending = false;
+};
+AppliedLog gLog;
+constexpr uint32_t LOG_SETTLE_MS = 400;
+
 constexpr uint32_t maxDuty(uint8_t bits) { return (1u << bits) - 1u; }
 
 // Perception-weighted percent -> duty, gamma 1.6554: 16-bit fixed-point table
@@ -342,14 +356,16 @@ void FrontlightManager::apply() {
   if (dual) {
     writeChannel(fl.gpioWarm, LEDC_CH_WARM, physicalDuty(warmDuty, full, fl.activeHigh));
   }
-  // Boot and wake re-apply the same state several times; log changes only.
-  static uint32_t loggedCool = UINT32_MAX;
-  static uint32_t loggedWarm = UINT32_MAX;
-  if (coolDuty == loggedCool && warmDuty == loggedWarm) return;
-  loggedCool = coolDuty;
-  loggedWarm = warmDuty;
-  LOG_DBG("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", _brightness,
-          _brightnessLevel, totalDuty, coolDuty, warmDuty, totalDuty != 0 ? 1 : 0);
+  // Boot and wake re-apply the same state several times, and a brightness
+  // swipe ramps through ~20 steps: flushLog() prints the settled value once.
+  if (coolDuty == gLog.cool && warmDuty == gLog.warm) return;
+  gLog.cool = coolDuty;
+  gLog.warm = warmDuty;
+  gLog.total = totalDuty;
+  gLog.brightness = _brightness;
+  gLog.level = _brightnessLevel;
+  gLog.changedMs = millis();
+  gLog.pending = true;
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
@@ -424,6 +440,15 @@ void FrontlightManager::releaseOnWake() {
 }
 #endif
 #endif
+
+void FrontlightManager::flushLog() {
+#if FREEINK_CAP_FRONTLIGHT
+  if (!gLog.pending || millis() - gLog.changedMs < LOG_SETTLE_MS) return;
+  gLog.pending = false;
+  LOG_DBG("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", gLog.brightness,
+          gLog.level, gLog.total, gLog.cool, gLog.warm, gLog.total != 0 ? 1 : 0);
+#endif
+}
 
 void FrontlightManager::setBrightness(uint8_t percent) {
 #if FREEINK_CAP_FRONTLIGHT

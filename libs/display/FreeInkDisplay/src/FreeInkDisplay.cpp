@@ -1061,6 +1061,16 @@ void FreeInkDisplay::setCustomLUT(bool enabled, const unsigned char* lutData) {
   if (_driver) _driver->setCustomLut(_bus, enabled, lutData);
 }
 
+bool FreeInkDisplay::powerOffIdle() {
+  if (!_driver || _refreshPending || _grayscaleMode != GrayscaleMode::Overlay) return false;
+  return _driver->powerOffIdle(_bus);
+}
+
+bool FreeInkDisplay::powerOnIdle() {
+  if (!_driver || _refreshPending || _grayscaleMode != GrayscaleMode::Overlay) return false;
+  return _driver->powerOnIdle(_bus);
+}
+
 void FreeInkDisplay::deepSleep() {
   cancelGrayscalePass();
   syncPendingAsync();

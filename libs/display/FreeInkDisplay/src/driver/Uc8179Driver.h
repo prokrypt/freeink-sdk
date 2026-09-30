@@ -16,6 +16,8 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag). Production waits one RTOS tick
 // and then polls until BUSY_N is HIGH; it does not require observing a LOW edge.
 
+#include <BoardConfig.h>  // FREEINK_UC8179_PANEL_TEMP
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -66,6 +68,8 @@ class Uc8179Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  bool powerOffIdle(EpdBus& bus) override;
+  bool powerOnIdle(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
@@ -81,20 +85,14 @@ class Uc8179Driver : public PanelDriver {
   // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
   // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
   // (supportsStripGrayscale stays false; conversion needs the complete base).
-  void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
-                                  RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
-                             uint16_t h) override;
-  GrayscaleCapabilities grayscaleCapabilities(
-      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
+  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
       return {GrayscaleEncoding::AbsolutePlanes,
-              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
-              false, false, false};
-    if (mode != GrayscaleMode::Overlay)
-      return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false,
-            false, false};
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
   }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   // Starts the XTF_PRE_BW_MID base transition (or the B/W fallback) and returns
@@ -110,8 +108,13 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
-  void configureDirectGrayscale(EpdBus &bus);
-  void restoreBwConfiguration(EpdBus &bus);
+  // EXPERIMENT (test/kbd-uc8179): PTL helpers and windowed DTM2 upload.
+  void writePartialWindow(EpdBus& bus, uint16_t xStart, uint16_t xEnd, uint16_t yStart, uint16_t yEnd,
+                          bool scanAllGates = true);
+  void writeFullPartialWindow(EpdBus& bus);
+  void streamWindows(EpdBus& bus, const uint8_t* fb);
+  void configureDirectGrayscale(EpdBus& bus);
+  void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
   // SHL for horizontal panel direction, then pad to the addressed gate count.
   // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
@@ -122,7 +125,10 @@ class Uc8179Driver : public PanelDriver {
   // Debug log: SPI time spent streaming planes since the last DRF, printed as
   // each refresh starts so a refresh splits into SPI upload vs waveform.
   void logSpiBeforeDrf(const char* kind);
-  void samplePanelTemperature(EpdBus& bus);
+#if FREEINK_UC8179_PANEL_TEMP
+  // periodMs: minimum age of the last sample before another is taken.
+  void samplePanelTemperature(EpdBus& bus, unsigned long periodMs);
+#endif
   // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
   // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
   // leaves analog power on for the AA pass that follows.
@@ -144,10 +150,10 @@ class Uc8179Driver : public PanelDriver {
 
   const Uc8179Config& _cfg;
 
-  uint16_t _w;        // visible width (800)
-  uint16_t _h;        // visible height (480)
-  uint16_t _wb;       // width in bytes (100)
-  uint16_t _tresH;    // addressed gate count (600) — DTM padded to this
+  uint16_t _w;      // visible width (800)
+  uint16_t _h;      // visible height (480)
+  uint16_t _wb;     // width in bytes (100)
+  uint16_t _tresH;  // addressed gate count (600) — DTM padded to this
   uint32_t _bufferSize;
 
   // Stock Factory.bin uses absolute AA planes and derives its B/W base as
@@ -166,8 +172,12 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _directGrayPlanes = 0;
   uint32_t _spiUs = 0;
   uint8_t _spiPlanes = 0;
+  uint8_t _spiWindows = 0;  // T3 windowed DTM2 writes since the last SPI log
 
   bool _isScreenOn = false;
+  // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).
+  uint8_t _scrubLutFrames = 0;
+  bool _complementOldPlane = false;  // this refresh's DTM1 is the target's complement (DU scrub)
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;
@@ -189,7 +199,7 @@ class Uc8179Driver : public PanelDriver {
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
-  bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
+  bool _pendingPartial = false;   // this refresh used the PTIN/PTOUT partial path
   bool _pendingGrayBase = false;  // the pending refresh is a deferred AA base transition
   bool _pendingGrayPre = false;   // ...and its XTF_PRE_BW_MID waveform is running
   // A deferred base finished without re-sending DTM1: the AA LSB upload that

@@ -300,6 +300,13 @@ class FreeInkDisplay {
 
   // Power management
   void deepSleep();
+  // Booster off between refreshes (panel keeps its image). Skipped while a
+  // refresh or grayscale pass is pending; true when the panel switched off.
+  bool powerOffIdle();
+  // Booster on ahead of a refresh (e.g. on touch-down) so the next refresh
+  // skips its power-on wait. Skipped while a refresh or grayscale pass is
+  // pending; true when the panel switched on.
+  bool powerOnIdle();
 
   // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
   // firmware can apply its own power policy (e.g. reduce the CPU clock) for the
@@ -501,9 +508,50 @@ class FreeInkDisplay {
 #endif
 };
 
+// EXPERIMENT (test/kbd-uc8179, plan item 20): UC8179 keyboard fast-refresh
+// tweaks, applied only to Fast refreshes while set. Not for production.
+struct Uc8179KbdExperiment {
+  enum Flag : uint8_t {
+    SkipOldResync = 1 << 0,  // T2: rely on CDI N2OCP instead of re-streaming DTM1
+    TwoWindow = 1 << 1,      // T3: DTM2 written only inside `windows` via PTL
+    KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
+    WindowDrf = 1 << 3,      // retired T6 (windowed DRF); ignored
+  };
+  struct Window {
+    uint16_t x, y, w, h;  // framebuffer (panel) coordinates; x and w 8-aligned
+  };
+  uint8_t flags = 0;
+  uint8_t lutFrames = 3;  // DU frames per phase for KW/WK (two phases)
+  uint8_t pll = 0;        // 0x30 value during the refresh; 0 keeps the default
+  uint8_t windowCount = 0;
+  Window windows[2] = {};
+};
+struct Uc8179KbdTiming {
+  uint32_t uploadMs = 0;  // displayStart entry -> DRF command
+  uint32_t drfMs = 0;     // DRF command -> BUSY released
+  uint32_t syncMs = 0;    // OLD-plane resync after the refresh (0 when skipped)
+  uint32_t count = 0;     // refreshes measured
+  uint16_t drfRows = 0;   // gate rows the last DRF scanned (panel height when not windowed)
+  uint32_t doneMs = 0;    // millis() when the last DRF finished (BUSY released)
+};
+// nullptr turns the experiment off. Call from the task that refreshes.
+void setUc8179KbdExperiment(const Uc8179KbdExperiment* experiment);
+// T5: the next Fast refresh runs as Half instead (one cleanup pass).
+void requestUc8179HalfNext();
+// The next Fast refresh re-drives every pixel with the T4 keyboard LUT (a DU
+// scrub, two phases). Ignored unless the experiment has KbdLut set.
+void requestUc8179DuScrubNext();
+// The next Half refresh runs as a DU scrub with `frames` of the keyboard-style
+// register LUT instead of the flashing OTP GC waveform (~300 ms, no flash).
+// Needs no experiment. One shot: the next refresh clears it. Other
+// controllers ignore it.
+void requestUc8179HalfAsDuScrubNext(uint8_t frames);
+Uc8179KbdTiming uc8179KbdTiming();
+#if FREEINK_UC8179_PANEL_TEMP
 // Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
 // a refresh at most once a minute; false until the first sample (or on other
 // controllers, which never sample).
 bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs);
+#endif
 
 }  // namespace freeink
