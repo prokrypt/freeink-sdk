@@ -160,6 +160,7 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
   uint8_t _vcomTrLogged = 0xFF;  // TR whose VCOM was last logged (0xFE: fallback)
   bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
+  bool _nullLut = false;  // this refresh runs makeNullLuts (requestUc8179NullNext)
   bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
@@ -175,6 +176,8 @@ class Uc8179Driver : public PanelDriver {
   // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).
   uint8_t _scrubLutFrames = 0;
   bool _complementOldPlane = false;  // this refresh's DTM1 is the target's complement (DU scrub)
+  bool _selectivePaint = false;      // ...except B/W pixels, which keep their true OLD
+  bool _holdBwPass = false;          // this direct gray pass runs the hold set (smooth gray)
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;

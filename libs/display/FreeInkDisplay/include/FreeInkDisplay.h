@@ -516,7 +516,7 @@ class FreeInkDisplay {
 // tweaks, applied only to Fast refreshes while set. Not for production.
 struct Uc8179KbdExperiment {
   enum Flag : uint8_t {
-    SkipOldResync = 1 << 0,  // retired T2 (rely on CDI N2OCP); ignored, OLD is always re-streamed
+    SkipOldResync = 1 << 0,  // with KbdLut: no DTM1 re-stream after the refresh; CDI N2OCP copies NEW to OLD
     KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
   };
   uint8_t flags = 0;
@@ -544,6 +544,17 @@ void requestUc8179DuScrubNext();
 // controllers ignore it.
 void requestUc8179HalfAsDuScrubNext(uint8_t frames);
 Uc8179KbdTiming uc8179KbdTiming();
+// millis() when the running UC8179 refresh's full-screen swing becomes visible
+// (it may lie ahead: direct gray holds white for its first 24 frames), 0 when
+// none runs or the background holds. Any task; other controllers return 0.
+uint32_t uc8179FlashSwingMs();
+// When that refresh is expected to end (millis(), from the last measured run of
+// its waveform); valid while uc8179FlashSwingMs() is nonzero.
+uint32_t uc8179FlashSwingDoneMs();
+// The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
+// 2 x `frames` frames (null discharge; pixels do not move). Balanced by
+// construction. One shot; other controllers ignore it.
+void requestUc8179NullNext(uint8_t frames);
 #if FREEINK_UC8179_PANEL_TEMP
 // Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
 // a refresh at most once a minute; false until the first sample (or on other
