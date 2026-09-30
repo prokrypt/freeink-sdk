@@ -800,16 +800,16 @@ void testListMarginIconLeavesRowInPlace() {
     props.rowHeight = 40;
     props.sidePadding = 8;
     props.scrollIndicator = false;
-    list(frame, Rect{0, 0, 200, 40}, props);
+    list(frame, Rect{12, 0, 188, 40}, props);  // 12 px of screen margin left of the list
     for (size_t i = 0; i < draw.opCount; ++i) {
       const auto& op = draw.ops[i];
       if (op.kind == FakeDrawTarget::Op::Text && op.align != TextAlign::Right) labelX[pass] = op.rect.x;
       if (op.kind == FakeDrawTarget::Op::Bitmap) mark = op.rect;
     }
   }
-  CHECK(labelX[0] >= 8);
-  CHECK_EQ(labelX[1], labelX[0]);                      // label did not move
-  CHECK(mark.width == 8 && mark.x >= 0 && mark.right() <= 8);  // scaled into the padding
+  CHECK_EQ(labelX[0], 20);
+  CHECK_EQ(labelX[1], labelX[0]);  // label did not move
+  CHECK(mark.width == 20 && mark.x == 0 && mark.right() == labelX[0]);  // out to the edge, ends at the text
 }
 
 void testListClampsBadTopIndex() {

@@ -111,8 +111,9 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
-  // Row icons draw inside the side padding (leading edge), scaled down to fit,
-  // so labels and values do not move: status marks, not row icons.
+  // Row icons draw left of the label, out to the screen edge (RTL: in the side
+  // padding), scaled down to fit, so labels and values do not move: status
+  // marks, not row icons.
   bool iconsInMargin = false;
   // When a multi-line label would otherwise overlap its trailing value, keep
   // the wrapped title band visually balanced with that value. Callers with a
@@ -452,7 +453,7 @@ struct ListRowLayout {
 };
 
 // ListProps::iconsInMargin; defined once in FreeInkUI.cpp (list() is a template).
-void drawListMarginIcon(DrawTarget &target, const Rect &row, const Rect &content,
+void drawListMarginIcon(DrawTarget &target, const Rect &content,
                         int16_t sidePad, const ListProps &props, const BitmapRef &icon,
                         const Paint &foreground);
 
@@ -782,7 +783,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     const BitmapRef icon =
         item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
     if (icon && props.iconsInMargin) {
-      drawListMarginIcon(frame.target(), row, content, sidePad, props, icon,
+      drawListMarginIcon(frame.target(), content, sidePad, props, icon,
                          style.foreground);
     } else if (icon) {
       const int16_t iconSize = props.iconSize > 0
