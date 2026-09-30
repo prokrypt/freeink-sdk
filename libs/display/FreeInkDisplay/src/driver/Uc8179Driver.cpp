@@ -593,11 +593,10 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     _grayBaseValid = true;
   }
   // Full and Half use the clearing OTP GC waveform; only an explicit Fast
-  // request may use the differential DU partial (PTIN/PTOUT). Half additionally
-  // forces every pixel into a transition cell by loading DTM1 with the target's
-  // complement. This matters for AA cleanup: a white target paired with a white
-  // OLD plane selects WW and can look clean while leaving old text charge parked
-  // underneath; gray exposes that latent charge later.
+  // request may use the differential DU partial (PTIN/PTOUT). Half keeps the
+  // true previous frame in DTM1 so the OTP runs real transitions and holds. A
+  // complement OLD plane would re-run K->W on every white pixel each Half, a
+  // one-way drive unless the (unreadable) OTP GC rows net zero.
   //
   // GHOSTING FIX: the OLD plane (0x10) MUST hold the PREVIOUS displayed frame for
   // a partial, not a flat 0xFF. In KW mode the (old,new) pair selects the per-
@@ -605,7 +604,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // KW (black->white) NEVER runs and last page's text is never erased = heavy
   // ghosting. Feeding the previous frame lets KW clear it. (0x10 is synced to the
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
-  // Half is the explicit strong scrub. Post-AA Fast paints are intercepted by
+  // Half is the explicit GC clean. Post-AA Fast paints are intercepted by
   // display() and use stock's non-flashing XTF_PRE_BW_MID transition instead.
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames;
@@ -630,16 +629,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     streamPlane(bus, CMD_DTM2, fb);
   }
   if (duScrub) streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-  if (!fast) {
-    if (scrub) {
-      // Charge scrub: target white is driven through BW and target black through
-      // WB. No WW/BB pixel is allowed to idle with charge from an older AA page.
-      streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-    } else {
-      // Full/forced-first flash retains the known absolute-from-white behavior.
-      bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
-    }
-  }
+  // Half with a valid OLD plane keeps it (true transitions). Full, and Half on
+  // an unknown panel state, keep the absolute-from-white behavior.
+  if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
   // A completed ordinary refresh supersedes any pending post-AA transition.
   _redriveAfterGray = false;
