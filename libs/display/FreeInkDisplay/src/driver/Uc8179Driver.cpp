@@ -473,75 +473,84 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
   _spiPlanes++;
 }
 
-// PROBE: ROTP (RA2h, UC8179c datasheet p.37) streams the OTP from address 0
-// on each read; no VPP, no program mode, so nothing is written. The layout is
-// p.47 (banks at 0x000/0xC00, check code 0xA5), p.50 (command defaults) and
-// p.51 (each TR: rate/VG, VDH, VDL, VDHR, XON, VCOM_DC at +0..+5, 0xF7 apart).
-// One extra leading byte is read in case the chip sends a dummy first.
+// PROBE: ROTP (RA2h, UC8179c datasheet p.37) streams the OTP from address 0;
+// no VPP, no program mode (never RA0h/RA1h), so nothing is written, and it
+// changes no registers, so no reset follows. Layout p.47 (banks at 0x000 /
+// 0xC00, check code 0xA5, TB0..TB10 at +1..+11), p.49 (TR = first TBn >= T),
+// p.51 (TR header at 0x049 + n*0xF7: +1 VDH, +2 VDL, +5 VCOM_DC). Read twice
+// and compared; aligned on 0xA5 (the datasheet shows no dummy byte, the SDK's
+// boot probe assumes one).
+namespace {
+unsigned otpTr(const uint8_t* bankBase, int t) {
+  for (unsigned n = 0; n < 11; ++n) {
+    if (t <= static_cast<int8_t>(bankBase[1 + n])) return n;
+  }
+  return 11;
+}
+}  // namespace
+
 void Uc8179Driver::readOtpProbe(EpdBus& bus) {
   constexpr uint32_t kLen = 0x1800 + 1;
-  auto* otp = static_cast<uint8_t*>(heap_caps_malloc(kLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (otp == nullptr) {
+  auto* a = static_cast<uint8_t*>(heap_caps_malloc(2 * kLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (a == nullptr) {
     LOG_ERR("EPD", "8179 OTP read: no buffer");
     return;
   }
-  bus.waitBusy(" 8179_otp_ready");
-  bus.cmd(0xA2);
-  bool ok = true;
-  for (uint32_t i = 0; i < kLen && ok; i += 255) {
-    ok = bus.readData(otp + i, static_cast<uint8_t>(kLen - i < 255 ? kLen - i : 255));
-  }
-  // Leave read mode the way the datasheet leaves program mode: a hardware reset.
-  if (_isScreenOn) {
-    bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_otp_POF");
-    _isScreenOn = false;
-  }
-  bus.reset(50);
-  initController(bus);
-  _directGrayConfigured = false;
-  _needFullClear = true;
-  _oldPlaneValid = false;
-  if (!ok) {
+  uint8_t* b = a + kLen;
+  bus.waitBusy(" 8179_otp_ready");  // ROTP is ignored while BUSY_N is low (p.46)
+  if (!bus.cmdReadStream(0xA2, a, kLen) || !bus.cmdReadStream(0xA2, b, kLen)) {
     LOG_ERR("EPD", "8179 OTP read skipped (shared SPI bus)");
-    free(otp);
+    free(a);
     return;
   }
-  const uint32_t skip = otp[0] == 0xA5 ? 0 : (otp[1] == 0xA5 || otp[1 + 0xC00] == 0xA5 ? 1 : 0);
-  const uint8_t* o = otp + skip;
+  uint32_t diffs = 0;
+  for (uint32_t i = 0; i < kLen; ++i) diffs += a[i] != b[i];
+  const uint32_t skip = (a[0] == 0xA5 || a[0xC00] == 0xA5) ? 0 : ((a[1] == 0xA5 || a[0xC01] == 0xA5) ? 1 : 0);
+  const uint8_t* o = a + skip;
   const uint32_t bank = o[0xC00] == 0xA5 ? 0xC00 : 0;
-  LOG_INF("EPD", "8179 OTP raw0 %02X %02X, dummy %u, check %02X/%02X, bank %u", otp[0], otp[1],
-          static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u);
-  for (uint32_t b = 0; b <= 0xC00; b += 0xC00) {
+  LOG_INF("EPD", "8179 OTP raw %02X %02X, dummy %u, check %02X/%02X, bank %u, read2 diffs %u", a[0], a[1],
+          static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u, static_cast<unsigned>(diffs));
+  for (uint32_t base = 0; base <= 0xC00; base += 0xC00) {
     char line[160];
-    int n = snprintf(line, sizeof(line), "8179 OTP bank%u 000-01E:", b ? 1u : 0u);
-    for (uint32_t a = 0; a <= 0x1E && n < static_cast<int>(sizeof(line)) - 3; ++a) {
-      n += snprintf(line + n, sizeof(line) - n, " %02X", o[b + a]);
+    int n = snprintf(line, sizeof(line), "8179 OTP bank%u 000-01E:", base ? 1u : 0u);
+    for (uint32_t i = 0; i <= 0x1E && n < static_cast<int>(sizeof(line)) - 3; ++i) {
+      n += snprintf(line + n, sizeof(line) - n, " %02X", o[base + i]);
     }
     LOG_INF("EPD", "%s", line);
-    LOG_INF("EPD", "8179 OTP bank%u rev prod %02X%02X%02X lut %02X%02X%02X", b ? 1u : 0u, o[b + 0xBDD], o[b + 0xBDE],
-            o[b + 0xBDF], o[b + 0xBE0], o[b + 0xBE1], o[b + 0xBE2]);
+    LOG_INF("EPD", "8179 OTP bank%u rev prod %02X%02X%02X lut %02X%02X%02X", base ? 1u : 0u, o[base + 0xBDD],
+            o[base + 0xBDE], o[base + 0xBDF], o[base + 0xBE0], o[base + 0xBE1], o[base + 0xBE2]);
     for (uint32_t tr = 0; tr < 12; ++tr) {
-      const uint8_t* h = o + b + 0x49 + tr * 0xF7;
-      LOG_INF("EPD", "8179 OTP bank%u TR%02u: %02X %02X %02X %02X %02X %02X %02X  VDH %02X VDL %02X VCOM %02X",
-              b ? 1u : 0u, static_cast<unsigned>(tr), h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[1] & 0x3F,
-              h[2] & 0x3F, h[5] & 0x7F);
+      const uint8_t* h = o + base + 0x49 + tr * 0xF7;
+      LOG_INF("EPD", "8179 OTP bank%u TR%02u: %02X %02X %02X %02X %02X %02X %02X  VDH %+d.%dV VDL -%d.%dV VCOM -%d.%02dV",
+              base ? 1u : 0u, static_cast<unsigned>(tr), h[0], h[1], h[2], h[3], h[4], h[5], h[6],
+              (24 + 2 * (h[1] & 0x3F)) / 10, (24 + 2 * (h[1] & 0x3F)) % 10, (24 + 2 * (h[2] & 0x3F)) / 10,
+              (24 + 2 * (h[2] & 0x3F)) % 10, (10 + 5 * (h[5] & 0x7F)) / 100, (10 + 5 * (h[5] & 0x7F)) % 100);
     }
   }
-  int n = snprintf(gOtpReport, sizeof(gOtpReport), "dummy=%u check=%02X/%02X bank=%u TR(VDH/VDL/VCOM):",
-                   static_cast<unsigned>(skip), o[0], o[0xC00], bank ? 1u : 0u);
+  bool live = false;
+  int8_t liveC = 0;
+#if FREEINK_UC8179_PANEL_TEMP
+  live = gPanelTempValid;
+  liveC = gPanelTempC;
+#endif
+  const uint8_t* bb = o + bank;
+  int n = snprintf(gOtpReport, sizeof(gOtpReport), "dummy=%u bank=%u diffs=%u TR@30C=%u TR@90C=%u TR@live(%dC)=%s",
+                   static_cast<unsigned>(skip), bank ? 1u : 0u, static_cast<unsigned>(diffs), otpTr(bb, 0x1E),
+                   otpTr(bb, 0x5A), static_cast<int>(liveC), live ? "" : "?");
+  if (live) n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, "%u", otpTr(bb, liveC));
+  n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, " VDH/VDL/VCOM:");
   for (uint32_t tr = 0; tr < 12 && n < static_cast<int>(sizeof(gOtpReport)) - 16; ++tr) {
-    const uint8_t* h = o + bank + 0x49 + tr * 0xF7;
+    const uint8_t* h = bb + 0x49 + tr * 0xF7;
     n += snprintf(gOtpReport + n, sizeof(gOtpReport) - n, " %u:%02X/%02X/%02X", static_cast<unsigned>(tr),
                   h[1] & 0x3F, h[2] & 0x3F, h[5] & 0x7F);
   }
-  free(otp);
+  LOG_INF("EPD", "8179 OTP %s", gOtpReport);
+  free(a);
 }
 
 bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
   gUploadStartMs = millis();
-  // Only over a B/W screen: the reset forces a Full, never allowed after gray.
-  if (gOtpReadNext && !_directGrayOnPanel) {
+  if (gOtpReadNext) {
     gOtpReadNext = false;
     readOtpProbe(bus);
   }
