@@ -1,6 +1,7 @@
 #include "Ssd1677Driver.h"
 
 #include <BoardConfig.h>
+#include <Logging.h>
 
 #include <vector>
 
@@ -659,6 +660,12 @@ void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 
 void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) {
   if (!enabled) {
+    _customLutActive = false;
+    return;
+  }
+  // Only tables proven DC balanced at compile time (Ssd1677Luts.h) may load.
+  if (data != lut_grayscale && data != lut_grayscale_sticky && data != lut_factory_quality) {
+    LOG_ERR("EPD", "SSD1677: refused unchecked custom LUT");
     _customLutActive = false;
     return;
   }
