@@ -530,8 +530,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // drawer's new black text a bit gray, which each later OTP Fast then darkened
     // (log 20260930T092637Z-c7ee2000-aa-darken L1722-2019). The OEM gray set
     // ends with ~24 frames to white and ~38 to black. ponytail: 24 per phase
-    // before a gray pass (Softfast turns); 36 when the paint is the final
-    // B/W screen (menus and the reader panels over a gray page, user pick 10:21).
+    // before a gray pass; 36 in smooth gray (Softfast) when the paint is the
+    // final B/W screen (menus and the reader panels over a gray page, user pick
+    // 10:21: Softfast only).
     // Every row of the paint LUT nets zero (Absolute), so a per-pixel mix of
     // true and complement OLD stays balanced.
     if (selectivePaint) {
@@ -541,7 +542,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       streamPlane(bus, CMD_DTM1, fb, true);
     }
     streamPlane(bus, CMD_DTM2, fb);
-    _scrubLutFrames = _paintForGrayBase ? 24 : 36;
+    _scrubLutFrames = _smoothGray && !_paintForGrayBase ? 36 : 24;
     _complementOldPlane = true;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
