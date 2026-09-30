@@ -189,6 +189,7 @@ unsigned long gDrfStartMs = 0;
 // background holds. gSwingEndMs bounds it if no wait observes the end.
 std::atomic<uint32_t> gSwingMs{0};
 std::atomic<uint32_t> gSwingEndMs{0};
+std::atomic<uint32_t> gSwingDoneMs{0};  // expected BUSY release (measured run)
 // Frame time per waveform kind, re-measured at the end of every run of it: the
 // OTP GC (one "frame" = the whole refresh), register DU and direct gray run at
 // different rates. Defaults from logs/device/20260930T192900Z-c2123894-psram.txt
@@ -246,6 +247,8 @@ uint32_t uc8179FlashSwingMs() {
   return static_cast<int32_t>(millis() - endMs) > 0 ? 0 : swingMs;
 }
 
+uint32_t uc8179FlashSwingDoneMs() { return gSwingDoneMs.load(std::memory_order_relaxed); }
+
 namespace {
 // Right before DRF. The swing starts swingFrame frames in (< 0: the background
 // holds, no swing); frameUs/totalFrames are re-measured when BUSY releases.
@@ -255,6 +258,7 @@ void swingStart(const int swingFrame, uint32_t* const frameUs, const uint16_t to
   if (swingFrame < 0 || frameUs == nullptr) return;
   const uint32_t now = millis();
   const uint32_t runMs = *frameUs * totalFrames / 1000;
+  gSwingDoneMs.store(now + runMs, std::memory_order_relaxed);
   gSwingEndMs.store(now + runMs + runMs / 2 + 100, std::memory_order_relaxed);  // slack: Full after a shorter Half
   gSwingMs.store((now + *frameUs * static_cast<uint32_t>(swingFrame) / 1000) | 1, std::memory_order_relaxed);
 }
