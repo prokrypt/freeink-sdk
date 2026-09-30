@@ -136,6 +136,18 @@ constexpr lutbalance::LutSet makeDuRedriveLuts(const uint8_t frames) {
   return s;
 }
 
+// Null discharge: every row (VCOM included) grounded for 2 x frames, so VCOM
+// sits at VCOM_DC and sources at GND while the gates scan normally.
+constexpr lutbalance::LutSet makeNullLuts(const uint8_t frames) {
+  lutbalance::LutSet s{};
+  for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
+    s.row[r][1] = frames;
+    s.row[r][2] = frames;
+    s.row[r][5] = 0x01;
+  }
+  return s;
+}
+
 // The only LUT register writer in this driver: takes gated sets only.
 void writeLutSet(EpdBus& bus, const lutbalance::CheckedLuts& luts) {
   for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
@@ -204,6 +216,9 @@ void requestUc8179HalfNext() { gHalfNext = true; }
 void requestUc8179DuScrubNext() { gDuScrubNext = true; }
 
 void requestUc8179HalfAsDuScrubNext(const uint8_t frames) { gHalfScrubFrames = frames; }
+
+uint8_t gNullFrames = 0;
+void requestUc8179NullNext(const uint8_t frames) { gNullFrames = frames; }
 
 Uc8179KbdTiming uc8179KbdTiming() { return gKbdTiming; }
 
@@ -559,6 +574,8 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     mode = RefreshMode::Fast;
     LOG_DBG("EPD", "8179: Half as DU scrub, %u frames", static_cast<unsigned>(halfScrubFrames));
   }
+  const uint8_t nullFrames = mode == RefreshMode::Fast ? gNullFrames : 0;
+  gNullFrames = 0;
   syncStaleOldPlane(bus);
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
@@ -610,7 +627,8 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
   // Half is the explicit GC clean.
   const bool scrub = (mode == RefreshMode::Half);
-  const bool fast = ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames;
+  const bool fast =
+      ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames || nullFrames;
 
   if (paintDestination) {
     // The panel holds direct gray, so no OLD plane is true: drive every pixel to
@@ -657,7 +675,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   }
 
   // A Half-as-scrub keeps the experiment's windows, PLL and resync skip out.
-  gExpActive = gKbdExpOn && fast && !paintDestination && !halfScrubFrames;
+  gExpActive = gKbdExpOn && fast && !paintDestination && !halfScrubFrames && !nullFrames;
   const bool duScrub =
       (duScrubRequested && gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut)) || halfScrubFrames;
   if (duScrub) LOG_DBG("EPD", "8179_EXP: DU scrub refresh");
@@ -674,11 +692,14 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // Fast, whose one-way rows can't be gated and leave new text gray under the
   // held gray pass. Same time as a regular smooth turn's paint.
   const bool smoothBase = _smoothGray && _paintForGrayBase && fast && !duScrub && !gExpActive;
-  _scrubLutFrames = smoothBase ? coldScaledFrames(24) : halfScrubFrames;
+  _scrubLutFrames = nullFrames ? nullFrames : smoothBase ? coldScaledFrames(24) : halfScrubFrames;
   _complementOldPlane = duScrub;
+  _nullLut = nullFrames != 0;
+  if (_nullLut) LOG_DBG("EPD", "8179: null discharge, %u frames", 2u * nullFrames);
   startBwRefresh(bus, fast);
   _scrubLutFrames = 0;
   _complementOldPlane = false;
+  _nullLut = false;
   _pendingPartial = fast;
   _pendingTurnOff = turnOff;
   _pendingRefresh = true;
@@ -720,7 +741,8 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     // scrub complements every pixel, so those rows are unused there.
     writeRegisterLutPower(bus, vcomDc());
     writeLutSet(bus,
-                _smoothGray && _scrubLutFrames
+                _nullLut ? lutbalance::checkedGenerator<makeNullLuts, lutbalance::Policy::Absolute>(frames, storage)
+                : _smoothGray && _scrubLutFrames
                     ? lutbalance::checkedGenerator<makeDuRedriveLuts, lutbalance::Policy::Absolute>(frames, storage)
                 : _complementOldPlane
                     ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
