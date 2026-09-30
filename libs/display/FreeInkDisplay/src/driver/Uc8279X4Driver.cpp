@@ -408,44 +408,22 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   }
   // Same differential model as the UC8179 sibling: only an EXPLICIT Fast request
   // uses the PTIN/PTOUT DU partial (OLD plane = previous displayed frame). Full
-  // AND Half both run the clearing OTP GC waveform — but they seed the OLD plane
-  // DIFFERENTLY (this is the load-bearing distinction, copied from UC8179):
-  //   * Half = charge SCRUB: OLD = complement of the target, so EVERY pixel
-  //     (including white background) is forced through a transition cell and no
-  //     WW/BB pixel idles with stale AA charge. A white-seed GC only redraws
-  //     black-target pixels and leaves background ghost parked in WW — that was
-  //     the residual ghosting seen after fix9's white-seed Half.
+  // AND Half both run the clearing OTP GC waveform. Nothing feeds the OTP a
+  // complement OLD plane (~target): that re-runs K->W on every white pixel and
+  // W->K on every black one each time, a one-way drive unless the (unreadable)
+  // OTP rows net zero. Same rule as the UC8179 sibling:
+  //   * Half keeps the true previous frame in DTM1 (real transitions and holds);
+  //     on an unknown panel state it seeds white like Full.
   //   * Full = absolute-from-white seed (the known clean full flash).
-  // Half is CrossPoint's periodic ghost-cleanup (every getRefreshFrequency()
-  // pages) AND the manual force-refresh; it MUST scrub, exactly like UC8179.
+  //   * Leaving direct gray: no OLD plane is true, so the GC runs from white
+  //     (_needFullClear is set) instead of a complement-OLD DU paint first.
+  //   * The first Fast after AA diffs against the B/W base restored in DTM1.
+  if (paintDestination) _oldPlaneValid = false;
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = (mode == RefreshMode::Fast) && !_needFullClear && _oldPlaneValid;
 
-  if (paintDestination) {
-    streamPlane(bus, CMD_DTM1, fb, true);
-    streamPlane(bus, CMD_DTM2, fb);
-    startBwRefresh(bus, true);
-    bus.waitRefreshComplete(" 8279x4_BW_TARGET_DRF");
-    bus.cmd(CMD_PARTIAL_OUT);
-  }
-
   streamPlane(bus, CMD_DTM2, fb);
-  if (!fast) {
-    if (scrub) {
-      // Half scrub: OLD = ~target -> every pixel transitions, purging idle charge.
-      streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-    } else {
-      // Full flash: seed the OLD plane white across the whole 600-gate scan for
-      // the absolute GC-from-white waveform.
-      bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
-    }
-  } else if (_redriveAfterGray) {
-    // Re-drive every pixel once after grayscale so the B/W transition scrubs
-    // residual edge charge before restoring the ordinary differential baseline.
-    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-  }
-  // Consumed: the white-seed (!fast) or the re-drive above already scrubbed any
-  // post-AA gray residue for this frame.
+  if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   _redriveAfterGray = false;
 
   startBwRefresh(bus, fast);
