@@ -218,6 +218,9 @@ class PanelDriver {
   // True while the panel shows a gray image whose pixel state a B/W frame
   // cannot describe (UC8179 direct gray): such a frame must not be seeded.
   virtual bool grayOnPanel() const { return false; }
+  // Smooth gray: when the page's B/W base is on the panel, gray pixels get a
+  // short balanced nudge from black instead of a full swing (UC8179 only).
+  virtual void setSmoothGray(bool smooth) { (void)smooth; }
   // The panel still shows `frame` (a software restart kept it). Differential
   // drivers load it as the previous frame so the first refresh can be Fast.
   // False when the driver cannot use it.
