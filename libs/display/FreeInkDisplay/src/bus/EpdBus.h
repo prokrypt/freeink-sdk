@@ -113,6 +113,9 @@ class EpdBus {
   // re-attaches the SPI peripheral around the read, so it refuses (false) on a
   // bus shared with another chip-select. One CS pulse per byte (datasheet).
   bool readData(uint8_t* out, uint8_t len);
+  // PROBE: bit-banged `cmd` then a `len`-byte stream with CS held low throughout
+  // (XteinkDetect epdCmdRead). Same bus rules as readData.
+  bool cmdReadStream(uint8_t cmd, uint8_t* out, uint32_t len);
 
   const EpdPins& pins() const { return _pins; }
   uint32_t spiHz() const { return _spiHz; }

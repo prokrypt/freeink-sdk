@@ -129,6 +129,8 @@ class Uc8179Driver : public PanelDriver {
   // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
+  void readOtpVcom(EpdBus& bus);
+  uint8_t vcomDc() const;
   bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
@@ -151,6 +153,9 @@ class Uc8179Driver : public PanelDriver {
   // With _grayBase it gives the panel's true state for the selective exit paint.
   uint8_t* _grayMask = nullptr;
   bool _panelGrayValid = false;  // _grayBase + _grayMask describe what the panel shows
+  uint8_t _otpTb[11] = {};    // OTP temperature boundaries (readOtpVcom)
+  uint8_t _otpVcom[12] = {};  // OTP VCOM_DC per temperature range
+  uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
   bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
   bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
