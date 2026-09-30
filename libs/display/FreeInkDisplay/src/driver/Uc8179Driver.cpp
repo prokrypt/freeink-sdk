@@ -526,9 +526,15 @@ void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 // balanced exit paint). Keep the gray on the panel, the controller in its
 // direct-gray config, and hand the base to the plane conversion alone. If the
 // gray pass is then cancelled, the next refresh still runs the exit paint.
+// The full-swing set drives every pixel from a B/W or unknown panel too (boot,
+// first page after a menu), so the base is skipped there as well: one flash, not
+// B/W text, a flash, then AA (user 18:30). The panel then counts as direct gray,
+// so a cancelled pass exits through the balanced complement paint, which needs
+// no true OLD plane (DTM1 may already hold a gray plane).
 bool Uc8179Driver::skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback) {
   // Smooth gray needs the B/W base on the panel, so it keeps the base refresh.
-  if (_smoothGray || !_directGrayOnPanel || fallback != RefreshMode::Fast || _grayBase == nullptr) return false;
+  if (_smoothGray || fallback != RefreshMode::Fast || _grayBase == nullptr) return false;
+  _directGrayOnPanel = true;
   memcpy(_grayBase, fb, _bufferSize);
   _grayBaseValid = true;
   _panelGrayValid = false;  // _grayBase no longer holds the displayed gray page's base
@@ -537,7 +543,7 @@ bool Uc8179Driver::skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallbac
   _directGrayPass = false;
   _directGrayPlanes = 0;
   _absoluteGrayPlanes = false;
-  LOG_DBG("EPD", "8179: gray base kept on direct gray, no B/W refresh");
+  LOG_DBG("EPD", "8179: gray base skipped, full swing sets every pixel");
   return true;
 }
 
