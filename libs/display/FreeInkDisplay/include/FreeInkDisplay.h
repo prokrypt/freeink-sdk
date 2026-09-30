@@ -544,6 +544,10 @@ void requestUc8179DuScrubNext();
 // controllers ignore it.
 void requestUc8179HalfAsDuScrubNext(uint8_t frames);
 Uc8179KbdTiming uc8179KbdTiming();
+// The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
+// 2 x `frames` frames (null discharge; pixels do not move). Balanced by
+// construction. One shot; other controllers ignore it.
+void requestUc8179NullNext(uint8_t frames);
 #if FREEINK_UC8179_PANEL_TEMP
 // Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
 // a refresh at most once a minute; false until the first sample (or on other

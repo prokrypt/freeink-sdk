@@ -157,6 +157,7 @@ class Uc8179Driver : public PanelDriver {
   uint8_t _otpVcom[12] = {};  // OTP VCOM_DC per temperature range
   uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
   bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
+  bool _nullLut = false;  // this refresh runs makeNullLuts (requestUc8179NullNext)
   bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
