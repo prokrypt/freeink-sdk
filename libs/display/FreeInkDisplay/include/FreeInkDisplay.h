@@ -561,5 +561,19 @@ void requestUc8179NullNext(uint8_t frames);
 // controllers, which never sample).
 bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs);
 #endif
+#if FREEINK_TUNING
+// Debug tuning (FREEINK_TUNING builds). Frame counts only feed the DC-balance
+// gated register-LUT generators; out-of-range values use the defaults.
+struct Uc8179Tuning {
+  uint8_t paintFrames = 12;        // exit paint / smooth base DU frames per phase, 6..24
+  uint8_t coldDivisor = 3;         // cold panels get frames / this more, 0 = none, ..10
+  uint8_t heldRedriveFrames = 8;   // smooth re-drive of held pixels: 0, 4, 8, 12 or 16
+  int8_t coldC = 15;               // cold below this panel temperature, -10..40
+  uint32_t tempPeriodMs = 60000;   // idle temperature sample period, >= 10 s
+  uint32_t tempRefreshPeriodMs = 300000;  // after-refresh sample period, >= 10 s
+  uint32_t tempMaxAgeMs = 600000;  // samples older than this are ignored, >= 10 s
+};
+void setUc8179Tuning(const Uc8179Tuning& tuning);
+#endif
 
 }  // namespace freeink

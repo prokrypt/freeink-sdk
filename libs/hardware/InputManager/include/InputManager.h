@@ -16,8 +16,34 @@
 
 #include <cstdint>
 
+// FREEINK_TUNING (debug builds): the timing and slop constants marked
+// INPUT_TUNABLE are settable through InputManager::setTuning().
+#if FREEINK_TUNING
+#define INPUT_TUNABLE static inline
+#else
+#define INPUT_TUNABLE static constexpr
+#endif
+
 class InputManager {
  public:
+#if FREEINK_TUNING
+  struct Tuning {
+    unsigned long homeKeyLongPressMs = 700;
+    unsigned long confirmBackHoldMs = 650;
+    unsigned long confirmPowerHoldMs = 400;
+    unsigned long twoButtonHoldMs = 650;
+    unsigned long touchIrqPulseMs = 120;
+    int touchTapSlopPx = 28;
+    int touchSwipeMinPx = 60;  // tap-on-release slop follows at one less
+    unsigned long touchSwipeMaxMs = 700;
+    unsigned long touchMultiSwipeMaxMs = 2000;
+    int touchMultiSeparationSlopPx = 45;
+    unsigned long touchLongPressMs = 500;
+  };
+  // Main task. Swipe min > 8 px and tap slop below it, else defaults; tap-on-release
+  // slop stays swipe min - 1. Other values are the caller's (app knob ranges).
+  static void setTuning(const Tuning& t);
+#endif
   InputManager();
   void begin();
   uint8_t getState();
@@ -421,7 +447,7 @@ class InputManager {
   bool touchHomeKeyLongFired = false;  // latched for the current hold so long
                                        // fires once and suppresses the tap
   unsigned long touchHomeKeyDownAt = 0;
-  static constexpr unsigned long HOME_KEY_LONG_PRESS_MS = 700;
+  INPUT_TUNABLE unsigned long HOME_KEY_LONG_PRESS_MS = 700;
   TouchPoint touchPoint = {false, 0, 0, 0};
   TouchSnapshot touchSnapshot{};
   MultiTouchGestureState multiTouchGestureState = MultiTouchGestureState::Idle;
@@ -465,22 +491,22 @@ class InputManager {
 
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
-  static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
-  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
-  static constexpr unsigned long TWO_BUTTON_HOLD_MS = 650;
+  INPUT_TUNABLE unsigned long CONFIRM_BACK_HOLD_MS = 650;
+  INPUT_TUNABLE unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  INPUT_TUNABLE unsigned long TWO_BUTTON_HOLD_MS = 650;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
-  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
+  INPUT_TUNABLE unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
-  static constexpr int TOUCH_TAP_SLOP_PX = 28;
-  static constexpr int TOUCH_SWIPE_MIN_PX = 60;
-  static constexpr int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
-  static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
-  static constexpr unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
-  static constexpr int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
+  INPUT_TUNABLE int TOUCH_TAP_SLOP_PX = 28;
+  INPUT_TUNABLE int TOUCH_SWIPE_MIN_PX = 60;
+  INPUT_TUNABLE int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  INPUT_TUNABLE unsigned long TOUCH_SWIPE_MAX_MS = 700;
+  INPUT_TUNABLE unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
+  INPUT_TUNABLE int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
   static constexpr int64_t TOUCH_CONTACT_ASSIGNMENT_AMBIGUITY_PX_SQ = 64;
-  static constexpr unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
+  INPUT_TUNABLE unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
                                                              // no button travel to absorb
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;
