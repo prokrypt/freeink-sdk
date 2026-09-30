@@ -147,9 +147,9 @@ void writeLutSet(EpdBus& bus, const lutbalance::CheckedLuts& luts) {
 // Register LUTs (PSR REG=1) drive with the PWR/VCOM_DC registers; OTP waveforms
 // carry their own voltages and VCOM per temperature range (UC8179c datasheet,
 // LUT format in OTP). After a reset these registers hold VDH/VDL +-14 V and
-// VCOM -0.10 V (R01h/R82h defaults), not the panel's +-15 V / -2.00 V from the
-// OEM gray_full packet, so every register-LUT refresh loads the packet's values.
-void writeRegisterLutPower(EpdBus& bus) {
+// VCOM -0.10 V (R01h/R82h defaults), so every register-LUT refresh loads the
+// OEM gray_full packet's +-15 V and `vcom` (Uc8179Driver::vcomDc).
+void writeRegisterLutPower(EpdBus& bus, const uint8_t vcom) {
   const auto* config = kUc8179DirectGrayConfig;
   bus.cmd(0x01);
   bus.data(0x17);
@@ -158,7 +158,7 @@ void writeRegisterLutPower(EpdBus& bus) {
   bus.data(static_cast<uint8_t>(config[2] & 0x3F));
   bus.data(static_cast<uint8_t>(config[3] & 0x3F));
   bus.cmd(0x82);
-  bus.data(config[5]);
+  bus.data(vcom);
 }
 
 // EXPERIMENT (test/kbd-uc8179): state set by the app between refreshes.
@@ -357,7 +357,7 @@ void Uc8179Driver::configureDirectGrayscale(EpdBus& bus) {
   bus.data(static_cast<uint8_t>((config[0] & 8) | (config[1] >> 6)));
   bus.cmd(0x30);
   bus.data(static_cast<uint8_t>(config[0] >> 4));
-  writeRegisterLutPower(bus);
+  writeRegisterLutPower(bus, vcomDc());
   bus.cmd(0x2A);
   bus.data(static_cast<uint8_t>(config[2] & 0xC0));
   bus.data(config[4]);
@@ -377,6 +377,58 @@ void Uc8179Driver::restoreBwConfiguration(EpdBus& bus) {
   _directGrayConfigured = false;
   _needFullClear = true;
   _oldPlaneValid = false;
+}
+
+// The panel's VCOM per temperature range is in its OTP (bank0, TR headers at
+// 0x049 + n*0xF7, +5 = VCOM_DC; boundaries TB0..TB10 at 0x001, 0x7F ends the
+// list; datasheet p.47/49/51). .67 reads -1.80 V at room temperature and
+// -2.40 V at 15 C and below, not the gray packet's fixed -2.00 V (log
+// 20260930T171300Z-8aa3091b-otpread L6-15). ROTP (RA2h, p.37) only reads.
+// Read once at begin(); ~2 KB bit-banged, about 40 ms.
+void Uc8179Driver::readOtpVcom(EpdBus& bus) {
+  constexpr uint32_t kLen = 0x49 + 11 * 0xF7 + 6;
+  auto* otp = static_cast<uint8_t*>(heap_caps_malloc(kLen, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (otp == nullptr) {
+    LOG_ERR("EPD", "8179 OTP VCOM: no buffer, using the gray packet's");
+    return;
+  }
+  bus.waitBusy(" 8179_otp_ready");
+  bool ok = bus.cmdReadStream(0xA2, otp, kLen) && otp[0] == 0xA5;
+  unsigned trs = 0;
+  for (; ok && trs < 11 && otp[1 + trs] != 0x7F; ++trs) {
+    ok = trs == 0 || static_cast<int8_t>(otp[1 + trs]) > static_cast<int8_t>(otp[trs]);
+  }
+  for (unsigned n = 0; ok && n <= trs; ++n) {
+    _otpVcom[n] = otp[0x49 + n * 0xF7 + 5];
+    ok = _otpVcom[n] <= 0x4F;  // -4.05 V, the table's end (p.35)
+  }
+  memcpy(_otpTb, otp + 1, sizeof(_otpTb));
+  free(otp);
+  _otpTrs = ok ? static_cast<uint8_t>(trs + 1) : 0;
+  if (!ok) {
+    LOG_ERR("EPD", "8179 OTP VCOM: unreadable, using the gray packet's");
+    return;
+  }
+  char line[96];
+  int n = snprintf(line, sizeof(line), "8179 OTP VCOM (TB C: VCOM_DC):");
+  for (unsigned t = 0; t < _otpTrs && n < static_cast<int>(sizeof(line)) - 12; ++t) {
+    n += snprintf(line + n, sizeof(line) - n, " %d:%02X", t + 1 < _otpTrs ? static_cast<int8_t>(_otpTb[t]) : 127,
+                  _otpVcom[t]);
+  }
+  LOG_INF("EPD", "%s", line);
+}
+
+// OTP VCOM for the panel's last measured temperature (25 C before a sample),
+// the gray packet's when the OTP was unreadable.
+uint8_t Uc8179Driver::vcomDc() const {
+  if (_otpTrs == 0) return kUc8179DirectGrayConfig[5];
+  int celsius = 25;
+#if FREEINK_UC8179_PANEL_TEMP
+  if (gPanelTempValid && millis() - gPanelTempMs <= PANEL_TEMP_MAX_AGE_MS) celsius = gPanelTempC;
+#endif
+  unsigned tr = 0;
+  while (tr + 1 < _otpTrs && celsius > static_cast<int8_t>(_otpTb[tr])) ++tr;
+  return _otpVcom[tr];
 }
 
 void Uc8179Driver::begin(EpdBus& bus) {
@@ -399,6 +451,7 @@ void Uc8179Driver::begin(EpdBus& bus) {
   _bwBaseShown = false;
   bus.reset(50);
   initController(bus);
+  if (_otpTrs == 0) readOtpVcom(bus);
 }
 
 void Uc8179Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) {
@@ -667,7 +720,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     lutbalance::LutSet storage;
     // Smooth gray paints and bases re-drive held pixels (WW, KK); a full DU
     // scrub complements every pixel, so those rows are unused there.
-    writeRegisterLutPower(bus);
+    writeRegisterLutPower(bus, vcomDc());
     writeLutSet(bus,
                 _smoothGray && _scrubLutFrames
                     ? lutbalance::checkedGenerator<makeDuRedriveLuts, lutbalance::Policy::Absolute>(frames, storage)
