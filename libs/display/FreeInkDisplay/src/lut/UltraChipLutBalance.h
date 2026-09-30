@@ -133,8 +133,6 @@ class CheckedLuts {
   friend constexpr CheckedLuts checkedTable();
   template <Generator Make, Policy P>
   friend CheckedLuts checkedGenerator(uint8_t frames, LutSet& storage);
-  template <const LutSet& S>
-  friend constexpr CheckedLuts vendorTable();
 };
 
 template <const LutSet& S, Policy P>
@@ -150,13 +148,6 @@ CheckedLuts checkedGenerator(uint8_t frames, LutSet& storage) {
   static_assert(balancedForAllFrames<Make>(P), "register LUT generator is not DC balanced for every frame count");
   storage = Make(frames);
   return CheckedLuts(&storage);
-}
-
-// Byte-exact vendor (OEM firmware) tables that fail the rule. Exempt only by
-// an explicit decision; each use must say why in a comment at the call site.
-template <const LutSet& S>
-constexpr CheckedLuts vendorTable() {
-  return CheckedLuts(&S);
 }
 
 // UC8279 rows use 7-byte groups [?, P1..P4, ?, ?], P = rail << 6 | frames
