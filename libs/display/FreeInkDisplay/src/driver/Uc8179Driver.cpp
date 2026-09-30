@@ -518,8 +518,11 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // its B/W target with the complement pair on the balanced DU LUT (every row
     // nets zero), not OTP Fast, whose one-way K->W/W->K rows can't be checked.
     // 6 frames per phase left overlays drawn over direct gray visibly gray
-    // (log 20260930T043445Z-ae927686: drawer at 41661). ponytail: 12 is 2x that
-    // guess; tune on the panel if gray still shows or the paint feels slow.
+    // (log 20260930T043445Z-ae927686: drawer at 41661), and 12 still left the
+    // drawer's new black text a bit gray, which each later OTP Fast then darkened
+    // (log 20260930T092637Z-c7ee2000-aa-darken L1722-2019). The OEM gray set
+    // ends with ~24 frames to white and ~38 to black. ponytail: 24 per phase;
+    // raise if new black text still looks gray.
     // Every row of the paint LUT nets zero (Absolute), so a per-pixel mix of
     // true and complement OLD stays balanced.
     if (selectivePaint) {
@@ -529,7 +532,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       streamPlane(bus, CMD_DTM1, fb, true);
     }
     streamPlane(bus, CMD_DTM2, fb);
-    _scrubLutFrames = 12;
+    _scrubLutFrames = 24;
     _complementOldPlane = true;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
