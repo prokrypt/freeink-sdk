@@ -927,6 +927,7 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     for (uint32_t i = 0; i < _bufferSize; i++) {
       _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
     }
+    if (_grayMask != nullptr) memcpy(_grayMask, lsb, _bufferSize);  // copyGrayscaleMsb ORs in msb
     streamPlane(bus, CMD_DTM1, _grayBase);
     _absoluteGrayPlanes = true;
   } else {
@@ -951,8 +952,11 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
     // With plane0=(base|maskLsb), stock plane1 is plane0 XOR maskMsb:
     // black 0^0=0, dark 1^1=0, light 0^1=1, white 1^0=1.
     streamPlaneXor(bus, CMD_DTM2, _grayBase, msb);
-    // plane0 XOR plane1 == msb: exactly the pixels that run the light/dark rows.
-    if (_grayMask != nullptr) memcpy(_grayMask, msb, _bufferSize);
+    // Gray pixels: msb (== plane0 ^ plane1, the light/dark rows) plus any lsb
+    // bit, so an lsb-only pixel (not a valid mask pair) is never trusted as B/W.
+    if (_grayMask != nullptr) {
+      for (uint32_t i = 0; i < _bufferSize; i++) _grayMask[i] = static_cast<uint8_t>(_grayMask[i] | msb[i]);
+    }
     // The stock gray_aa routine restores BOTH controller planes to its B/W base
     // after the gray activation. Recover that base now while plane0 and the MSB
     // mask are still available: base = plane0 & plane1.
