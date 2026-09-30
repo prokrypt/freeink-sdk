@@ -701,6 +701,22 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // Always streamed, never left to CDI N2OCP: that copy is unverified, and a
   // stale OLD plane makes the next OTP refresh (Half, exit frame) re-drive
   // settled pixels one way.
+  if (gExpActive && _pendingPartial && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut) &&
+      (gKbdExp.flags & Uc8179KbdExperiment::N2ocpProbe)) {
+    delay(1500);  // debug-only probe: let the viewer see the first refresh settle
+    LOG_INF("EPD", "8179: N2OCP probe refresh (blink = no NEW->OLD copy)");
+    startBwRefresh(bus, true);  // balanced DU: gExpActive and KbdLut still set
+    bus.waitRefreshComplete(" 8179_N2OCP_PROBE_DRF");
+    bus.cmd(CMD_PARTIAL_OUT);
+    if (gExpPll) {
+      bus.cmd(CMD_PLL_CONTROL);
+      bus.data(PLL_50_HZ);
+      gExpPll = false;
+    }
+    bus.cmd(CMD_VCOM_DATA_INTERVAL);
+    bus.data(_cfg.cdiIdle);
+    bus.data(CDI_INTERVAL);
+  }
   gExpActive = false;
   const unsigned long syncStart = millis();
   streamPlane(bus, CMD_DTM1, fb);

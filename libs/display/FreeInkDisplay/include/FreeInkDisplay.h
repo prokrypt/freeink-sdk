@@ -520,6 +520,13 @@ struct Uc8179KbdExperiment {
     TwoWindow = 1 << 1,      // retired T3 (windowed DTM2 upload); ignored, DTM2 is always the whole panel
     KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
     WindowDrf = 1 << 3,      // retired T6 (windowed DRF); ignored
+    // Goodies N2OCP probe, with KbdLut only: after this balanced DU refresh,
+    // wait 1.5 s and run a second balanced DU refresh on the same NEW plane
+    // with no OLD resync in between, then resync. If the controller copied
+    // NEW to OLD (CDI N2OCP) nothing moves; if not, the changed pixels blink.
+    // Balanced rows net zero whatever OLD holds, and OLD is resynced before
+    // anything else can run on it.
+    N2ocpProbe = 1 << 4,
   };
   // Retired with T3; kept so existing callers still build. Ignored.
   struct Window {
