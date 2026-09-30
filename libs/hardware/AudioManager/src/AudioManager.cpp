@@ -6,6 +6,7 @@
 // compile the stub bodies at the bottom and link no I2S/codec code.
 #if FREEINK_CAP_AUDIO
 
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/i2s_std.h>
 
@@ -66,6 +67,7 @@ bool AudioManager::present() const {
 }
 
 bool AudioManager::codecWrite(uint8_t reg, uint8_t value) {
+  freeink::I2cBusLock bus;
   const auto& cfg = BoardConfig::ACTIVE.audio;
   Wire.beginTransmission(cfg.codecAddr);
   Wire.write(reg);

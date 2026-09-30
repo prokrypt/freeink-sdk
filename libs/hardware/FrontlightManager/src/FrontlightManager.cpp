@@ -2,6 +2,7 @@
 
 #if FREEINK_CAP_FRONTLIGHT
 #include <M5Pm1.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 
 #include "FrontlightManager.h"
@@ -232,6 +233,7 @@ void FrontlightManager::begin() {
 #if FREEINK_CAP_FRONTLIGHT
 #if FREEINK_DEVICE_EEGO_A4
 bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
+  freeink::I2cBusLock bus;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);
@@ -240,6 +242,7 @@ bool FrontlightManager::lm3630aWrite(const uint8_t reg, const uint8_t value) {
 }
 
 bool FrontlightManager::lm3630aRead(const uint8_t reg, uint8_t& value) {
+  freeink::I2cBusLock bus;
   const auto& cfg = BoardConfig::ACTIVE.i2cFrontlight;
   Wire.beginTransmission(cfg.address);
   Wire.write(reg);

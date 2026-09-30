@@ -6,6 +6,7 @@
 
 #if FREEINK_CAP_RTC
 
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
@@ -67,6 +68,7 @@ uint8_t bcdToDec(uint8_t v) { return static_cast<uint8_t>((v >> 4) * 10U + (v & 
 uint8_t decToBcd(uint8_t v) { return static_cast<uint8_t>((v / 10U) << 4 | (v % 10U)); }
 
 bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -76,6 +78,7 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -198,6 +201,8 @@ bool Rtc::set(const DateTime& dt) {
   if (!begun_ || addr == 0) return false;
   const auto& s = BoardConfig::ACTIVE.sensors;
   const uint8_t centuryBit = dt.year < 2000 ? 0x80U : 0x00U;
+  // One lock over the whole write, including the RX8130 stop/restart around it.
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   if (s.rtcType == BoardConfig::RtcType::None) return false;

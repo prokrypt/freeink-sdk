@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>
 
@@ -594,6 +595,7 @@ constexpr uint8_t QMI8658_WHO_AM_I_REG = 0x00;
 constexpr uint8_t QMI8658_WHO_AM_I_VALUE = 0x05;
 
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
@@ -603,6 +605,7 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
 }
 
 bool readReg16LE(uint8_t addr, uint8_t reg, uint16_t* out) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;

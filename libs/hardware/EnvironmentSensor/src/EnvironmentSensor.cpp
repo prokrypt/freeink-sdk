@@ -4,6 +4,7 @@
 
 #if FREEINK_CAP_TEMP_HUMIDITY
 
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
@@ -40,6 +41,7 @@ void ensureWire() {
 }
 
 bool sendCommand(uint8_t addr, uint8_t cmd) {
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -79,9 +81,12 @@ bool EnvironmentSensor::read(float& tempC, float& humidityPct) {
   delay(MEASURE_DELAY_MS);
 
   auto& wire = sensorWire();
-  if (wire.requestFrom(addr, static_cast<uint8_t>(6), static_cast<uint8_t>(true)) < 6) return false;
   uint8_t b[6];
-  for (uint8_t i = 0; i < 6; ++i) b[i] = wire.read();
+  {
+    freeink::I2cBusLock bus(wire);
+    if (wire.requestFrom(addr, static_cast<uint8_t>(6), static_cast<uint8_t>(true)) < 6) return false;
+    for (uint8_t i = 0; i < 6; ++i) b[i] = wire.read();
+  }
   if (crc8(b[0], b[1]) != b[2] || crc8(b[3], b[4]) != b[5]) return false;
 
   const uint16_t tRaw = static_cast<uint16_t>(b[0] << 8 | b[1]);
