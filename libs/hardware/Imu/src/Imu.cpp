@@ -4,6 +4,7 @@
 
 #if FREEINK_CAP_IMU
 
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <soc/soc_caps.h>
 
@@ -81,6 +82,7 @@ void ensureWire() {
 }
 
 bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
@@ -90,6 +92,7 @@ bool writeReg(uint8_t addr, uint8_t reg, uint8_t value) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* dst, uint8_t len) {
+  freeink::I2cBusLock bus(sensorWire());
   ensureWire();
   auto& wire = sensorWire();
   wire.beginTransmission(addr);
