@@ -30,9 +30,6 @@ struct ListItem {
   // It shares the row's logical index and interaction value. Kept last so
   // existing aggregate initializers remain source-compatible.
   const char *sectionHeading = nullptr;
-  // Draw the icon inside the row's side padding (leading edge), scaled down
-  // to fit, so the label and value do not move: a status mark, not a row icon.
-  bool iconInMargin = false;
 };
 
 struct ListNav;
@@ -114,6 +111,9 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
+  // Row icons draw inside the side padding (leading edge), scaled down to fit,
+  // so labels and values do not move: status marks, not row icons.
+  bool iconsInMargin = false;
   // When a multi-line label would otherwise overlap its trailing value, keep
   // the wrapped title band visually balanced with that value. Callers with a
   // short, secondary value (such as a file extension) can disable this to
@@ -448,6 +448,11 @@ struct ListRowLayout {
   uint8_t labelLines = 1;
 };
 
+// ListProps::iconsInMargin; defined once in FreeInkUI.cpp (list() is a template).
+void drawListMarginIcon(DrawTarget &target, const Rect &row, const Rect &content,
+                        int16_t sidePad, const ListProps &props, const BitmapRef &icon,
+                        const Paint &foreground);
+
 inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *assets,
                                     const int16_t width, const ListProps &props,
                                     const ListItem &item) {
@@ -455,7 +460,7 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
   const int16_t labelLh = target.lineHeight(props.labelText.font);
-  const BitmapRef icon = item.iconInMargin ? BitmapRef{} : item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
+  const BitmapRef icon = props.iconsInMargin ? BitmapRef{} : item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
                                                    (icon ? iconSize + props.textGap : 0));
@@ -773,16 +778,9 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
     const BitmapRef icon =
         item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
-    if (icon && item.iconInMargin) {
-      int16_t markSize = props.iconSize > 0 ? props.iconSize
-                                            : static_cast<int16_t>(icon.width);
-      if (markSize > sidePad) markSize = sidePad;
-      const int16_t markX = props.rtl ? content.right() : row.x;
-      frame.target().bitmap(
-          Rect{static_cast<int16_t>(markX + (sidePad - markSize) / 2),
-               static_cast<int16_t>(content.y + (content.height - markSize) / 2),
-               markSize, markSize},
-          icon, BitmapMode::Contain, style.foreground);
+    if (icon && props.iconsInMargin) {
+      drawListMarginIcon(frame.target(), row, content, sidePad, props, icon,
+                         style.foreground);
     } else if (icon) {
       const int16_t iconSize = props.iconSize > 0
                                    ? props.iconSize

@@ -792,9 +792,9 @@ void testListMarginIconLeavesRowInPlace() {
     item.value = ">";
     if (pass == 1) {
       item.icon = BitmapRef{iconBits, 24, 24};
-      item.iconInMargin = true;
     }
     ListProps props;
+    props.iconsInMargin = true;
     props.items = &item;
     props.count = 1;
     props.rowHeight = 40;
