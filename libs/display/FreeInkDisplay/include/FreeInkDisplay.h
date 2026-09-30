@@ -512,7 +512,7 @@ class FreeInkDisplay {
 // tweaks, applied only to Fast refreshes while set. Not for production.
 struct Uc8179KbdExperiment {
   enum Flag : uint8_t {
-    SkipOldResync = 1 << 0,  // retired T2 (rely on CDI N2OCP); ignored, OLD is always re-streamed
+    SkipOldResync = 1 << 0,  // N2OCP probe only: honored after a KbdLut refresh, else ignored
     TwoWindow = 1 << 1,      // T3: DTM2 written only inside `windows` via PTL
     KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
     WindowDrf = 1 << 3,      // retired T6 (windowed DRF); ignored

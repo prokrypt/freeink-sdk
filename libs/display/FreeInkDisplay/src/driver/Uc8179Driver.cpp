@@ -440,6 +440,19 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     mode = RefreshMode::Fast;
     LOG_DBG("EPD", "8179: Half as DU scrub, %u frames", static_cast<unsigned>(halfScrubFrames));
   }
+  if (_oldPlaneUnverified) {
+    // Every row of the balanced DU LUT nets zero whatever OLD holds; any other
+    // waveform on an unverified OLD plane could drive settled pixels one way,
+    // so it starts from white like the first refresh after boot.
+    _oldPlaneUnverified = false;
+    const bool balancedNext =
+        mode == RefreshMode::Fast && (halfScrubFrames || (gKbdExpOn && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut)));
+    if (!balancedNext) {
+      _oldPlaneValid = false;
+      _needFullClear = true;
+      LOG_DBG("EPD", "8179: unverified OLD plane, restarting from white");
+    }
+  }
   syncStaleOldPlane(bus);
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
@@ -564,6 +577,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // EXPERIMENT T4: REG set -> register LUTs below instead of OTP.
   bus.data(static_cast<uint8_t>(kbdLut ? _cfg.psr0 : (_cfg.psr0 & 0xDF)));  // 0x1F: REG cleared -> OTP + SHL
   bus.data(_cfg.psr1);
+  _lastRefreshBalanced = kbdLut;
   if (kbdLut) {
     const uint8_t frames = _scrubLutFrames ? _scrubLutFrames : (gKbdExp.lutFrames ? gKbdExp.lutFrames : 3);
     // A DU scrub loads DTM1 with the target's complement, so the OLD plane is
@@ -665,13 +679,17 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   // Sync the OLD plane (0x10) with the just-displayed frame so the NEXT partial
   // diffs against it (KW clears erased pixels -> no ghosting). This is the piece
   // that makes fast page turns clean.
-  // Always streamed, never left to CDI N2OCP: that copy is unverified, and a
-  // stale OLD plane makes the next OTP refresh (Half, exit frame) re-drive
-  // settled pixels one way.
+  // Streamed, not left to CDI N2OCP: that copy is unverified, and a stale OLD
+  // plane makes the next OTP refresh (Half, exit frame) re-drive settled pixels
+  // one way. Only the N2OCP probe (Goodies) skips it, and only after a balanced
+  // DU refresh; displayStart() then lets nothing but balanced DU run on it.
+  const bool skipResync = gExpActive && _pendingPartial && _lastRefreshBalanced &&
+                          (gKbdExp.flags & Uc8179KbdExperiment::SkipOldResync);
   gExpActive = false;
   const unsigned long syncStart = millis();
-  streamPlane(bus, CMD_DTM1, fb);
-  gKbdTiming.syncMs = static_cast<uint32_t>(millis() - syncStart);
+  if (!skipResync) streamPlane(bus, CMD_DTM1, fb);
+  _oldPlaneUnverified = skipResync;
+  gKbdTiming.syncMs = skipResync ? 0 : static_cast<uint32_t>(millis() - syncStart);
   _oldPlaneValid = true;
   _bwPlanesSynced = true;
   _needFullClear = false;
