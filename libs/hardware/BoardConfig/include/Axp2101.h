@@ -16,6 +16,7 @@
 // on BoardConfig, so no extra lib wiring.
 
 #include <Arduino.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 
 #include "BoardConfig.h"
@@ -57,6 +58,7 @@ inline void beginBus() {
 }
 
 inline bool readReg(uint8_t reg, uint8_t& out) {
+  I2cBusLock bus;
   beginBus();
   Wire.beginTransmission(address());
   Wire.write(reg);
@@ -67,6 +69,7 @@ inline bool readReg(uint8_t reg, uint8_t& out) {
 }
 
 inline bool writeReg(uint8_t reg, uint8_t value) {
+  I2cBusLock bus;
   beginBus();
   Wire.beginTransmission(address());
   Wire.write(reg);

@@ -125,7 +125,6 @@ void Uc8279Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, 
 bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
                                 const uint8_t *prev, RefreshMode mode,
                                 bool turnOff) {
-  const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
   _directGrayPass = false;
   (void)prev; // single-buffer: DTM1 holds the previous frame from
@@ -142,25 +141,6 @@ bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
   // request with a baseline.
   const bool useGc = (mode != RefreshMode::Fast) || !_oldPlaneValid ||
                      _forceFullSyncNext || _initialFullsRemaining > 0;
-
-  if (paintDestination) {
-    grayWindowIn(bus);
-    bus.sendPlaneFlippedInverted(CMD_DTM1, fb, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
-    bus.sendPlaneFlipped(CMD_DTM2, fb, _h, _wb);
-    bus.cmd(CMD_DATA_STOP);
-    bus.cmd(CMD_VCOM_DATA_INTERVAL);
-    bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-    loadBank(bus, kUc8279X3_BwDu);
-    if (!_isScreenOn) {
-      bus.cmd(CMD_POWER_ON);
-      bus.waitBusy(" 8279_PON");
-      _isScreenOn = true;
-    }
-    bus.cmd(CMD_DISPLAY_REFRESH);
-    bus.waitBusy(" 8279_BW_TARGET_DRF");
-    bus.cmd(CMD_PARTIAL_OUT);
-  }
 
   bus.cmd(CMD_PARTIAL_IN);  // enter the full-panel PTL window set in init
 
@@ -179,7 +159,10 @@ bool Uc8279Driver::displayStart(EpdBus &bus, const uint8_t *fb,
   // to the AA pre-conditioning pass (FUN_42015944), not plain GC/DU refreshes.
   bus.cmd(CMD_VCOM_DATA_INTERVAL);
   bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-  loadBank(bus, useGc ? kUc8279X3_BwGc : kUc8279X3_BwDu);
+  // Unknown OLD plane (first paint, leaving direct or absolute gray): the
+  // absolute scrub, not GC from a white seed or a complement-OLD DU paint, both
+  // of which re-run one-way transitions on pixels already at their target.
+  loadBank(bus, !_oldPlaneValid ? kUc8279X3_BwScrub : useGc ? kUc8279X3_BwGc : kUc8279X3_BwDu);
   _pendingUsedGc = useGc;
 
   if (!_isScreenOn) {
@@ -362,24 +345,15 @@ void Uc8279Driver::beginGrayscale(EpdBus &bus, const uint8_t *fb,
 }
 
 void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) {
-  // OEM "AA-pre-BW(mid)" base: settle the frame with XTF_PRE_BW_MID before the
-  // gray planes so particles are receptive to the weak AA nudge. When the
-  // controller state can't support a clean differential (post-AA, boot fulls
-  // pending, or a resync request), take the clean B/W fallback then settle.
+  // OEM "AA-pre-BW(mid)" base: a differential XTF_PRE_BW_MID refresh to the
+  // new frame. When the controller state can't support a clean differential
+  // (post-AA, boot fulls pending, or a resync request), take the clean B/W
+  // fallback instead.
   if (_inGrayscaleMode) grayscaleRevert(bus, fb);
   const bool cleanBaseNeeded = !_oldPlaneValid || _lsbValid || _forceFullSyncNext || _initialFullsRemaining > 0;
   if (cleanBaseNeeded) {
-    display(bus, fb, nullptr, fallback, /*turnOff=*/false);
-    grayWindowIn(bus);
-    bus.cmd(CMD_VCOM_DATA_INTERVAL);
-    bus.data(kUc8279X3_CdiLater);
-    bus.cmd(CMD_CCSET);
-    bus.data(kUc8279X3_AaPreE0);
-    bus.cmd(CMD_TSSET);
-    bus.data(kUc8279X3_AaPreE5);
-    loadBank(bus, kUc8279X3_XtfPreBwMid);
-    triggerGrayRefresh(bus, turnOff);
-    bus.cmd(CMD_PARTIAL_OUT);
+    // XTF_PRE_BW_MID holds are GND, so a settle with DTM1 == DTM2 drives nothing.
+    display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
   grayWindowIn(bus);
@@ -399,38 +373,6 @@ void Uc8279Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   bus.cmd(CMD_DATA_STOP);
   bus.cmd(CMD_PARTIAL_OUT);
   _oldPlaneValid = true;
-}
-
-void Uc8279Driver::preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
-  if (w == 0 || h == 0 || x >= _w || y >= _h) return;
-  // Only safe when both planes hold the displayed B/W frame (not gray, synced).
-  if (_inGrayscaleMode || !_oldPlaneValid || _lsbValid) return;
-  const uint16_t xEndLogical = static_cast<uint16_t>(((x + w - 1) < (_w - 1)) ? (x + w - 1) : (_w - 1));
-  const uint16_t yEndLogical = static_cast<uint16_t>(((y + h - 1) < (_h - 1)) ? (y + h - 1) : (_h - 1));
-  const uint16_t xs = static_cast<uint16_t>(x & ~7u);
-  const uint16_t xe = static_cast<uint16_t>(xEndLogical | 7u);
-  const uint16_t gateYStart = static_cast<uint16_t>((_h - 1) - yEndLogical);
-  const uint16_t gateYEnd = static_cast<uint16_t>((_h - 1) - y);
-  const uint8_t win[9] = {static_cast<uint8_t>(xs >> 8),
-                          static_cast<uint8_t>(xs & 0xFF),
-                          static_cast<uint8_t>(xe >> 8),
-                          static_cast<uint8_t>(xe & 0xFF),
-                          static_cast<uint8_t>(gateYStart >> 8),
-                          static_cast<uint8_t>(gateYStart & 0xFF),
-                          static_cast<uint8_t>(gateYEnd >> 8),
-                          static_cast<uint8_t>(gateYEnd & 0xFF),
-                          0x01};
-  bus.cmd(CMD_PARTIAL_IN);
-  bus.cmdData(CMD_PARTIAL_WINDOW, win, 9);
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  bus.data(_firstRefresh ? kUc8279X3_CdiFirst : kUc8279X3_CdiLater);
-  bus.cmd(CMD_CCSET);
-  bus.data(kUc8279X3_AaPreE0);
-  bus.cmd(CMD_TSSET);
-  bus.data(kUc8279X3_AaPreE5);
-  loadBank(bus, kUc8279X3_XtfPreBwMid);
-  triggerGrayRefresh(bus, /*turnOff=*/false);
-  bus.cmd(CMD_PARTIAL_OUT);
 }
 
 void Uc8279Driver::cleanupGrayscaleBuffers(EpdBus &bus, const uint8_t *bw) {

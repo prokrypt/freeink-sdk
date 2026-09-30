@@ -129,24 +129,10 @@ class Uc8179Driver : public PanelDriver {
   // periodMs: minimum age of the last sample before another is taken.
   void samplePanelTemperature(EpdBus& bus, unsigned long periodMs);
 #endif
-  // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
-  // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
-  // leaves analog power on for the AA pass that follows.
-  void runGrayscalePrecondition(EpdBus& bus);
-  // Split halves of runGrayscalePrecondition(): start returns false when the
-  // pre-pass is skipped (first AA page / no baseline); finish rides out BUSY.
-  bool startGrayscalePrecondition(EpdBus& bus);
-  void finishGrayscalePrecondition(EpdBus& bus);
-  // Blocking, non-flashing B/W transition used by a Fast page immediately
-  // after AA. The generic reader path does not call displayGrayscaleBase(), so
-  // display() routes its post-AA Fast base here as well.
-  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
-  bool transitionGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb);
-  void transitionGrayscaleBaseFinish(EpdBus& bus, const uint8_t* fb, bool turnOff, bool preconditionRunning,
-                                     bool deferOldPlane);
   // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
+  bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
 
@@ -187,21 +173,11 @@ class Uc8179Driver : public PanelDriver {
   // True when both controller planes have been restored to the displayed B/W
   // base. False while an ordinary refresh or AA selector upload is in flight.
   bool _bwPlanesSynced = false;
-  // Set after every grayscale refresh. The next ordinary Fast B/W paint uses
-  // stock's non-flashing XTF_PRE_BW_MID transition instead of DU. Explicit Half
-  // remains the complement-driven GC scrub for periodic and sleep cleanup.
-  bool _redriveAfterGray = false;
-  // Tracks whether the first AA page has completed; Factory.bin skips the
-  // XTF_PRE_BW_MID pre-pass only for that first page. AA activation itself uses
-  // CDI 0x29 every time; 0xA9 is restored only after B/W/preconditioning passes.
-  bool _grayRefreshedOnce = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
-  bool _pendingPartial = false;   // this refresh used the PTIN/PTOUT partial path
-  bool _pendingGrayBase = false;  // the pending refresh is a deferred AA base transition
-  bool _pendingGrayPre = false;   // ...and its XTF_PRE_BW_MID waveform is running
+  bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
   // A deferred base finished without re-sending DTM1: the AA LSB upload that
   // normally follows overwrites it immediately. DTM1 still holds the previous
   // page until syncStaleOldPlane() or that upload runs.
