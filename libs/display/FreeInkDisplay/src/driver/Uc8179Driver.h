@@ -79,6 +79,7 @@ class Uc8179Driver : public PanelDriver {
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
   bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
+  bool grayOnPanel() const override { return _directGrayOnPanel; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
@@ -150,6 +151,11 @@ class Uc8179Driver : public PanelDriver {
   // then copyGrayscaleMsb() recovers the clean B/W base for stock's RAM restore.
   uint8_t* _grayBase = nullptr;
   bool _grayBaseValid = false;
+  // Gray pixels (1 = light/dark) of the last overlay-path gray page, PSRAM.
+  // With _grayBase it gives the panel's true state for the selective exit paint.
+  uint8_t* _grayMask = nullptr;
+  bool _panelGrayValid = false;  // _grayBase + _grayMask describe what the panel shows
+  bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
   bool _absoluteInput = false;
   bool _directGrayPass = false;

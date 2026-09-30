@@ -1005,6 +1005,8 @@ bool FreeInkDisplay::seedDisplayedFrame(const uint8_t* frame) {
   return _driver && frame && _driver->seedDisplayedFrame(_bus, frame);
 }
 
+bool FreeInkDisplay::grayOnPanel() const { return _driver && _driver->grayOnPanel(); }
+
 void FreeInkDisplay::beginDisplayWork() {
   if (_driver) _driver->beginDisplayWork();
 }

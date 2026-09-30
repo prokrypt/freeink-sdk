@@ -215,6 +215,9 @@ class PanelDriver {
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // True while the panel shows a gray image whose pixel state a B/W frame
+  // cannot describe (UC8179 direct gray): such a frame must not be seeded.
+  virtual bool grayOnPanel() const { return false; }
   // The panel still shows `frame` (a software restart kept it). Differential
   // drivers load it as the previous frame so the first refresh can be Fast.
   // False when the driver cannot use it.

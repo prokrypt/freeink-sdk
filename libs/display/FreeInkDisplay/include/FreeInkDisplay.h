@@ -281,6 +281,8 @@ class FreeInkDisplay {
   void skipInitialResync();
   // See PanelDriver::seedDisplayedFrame. Call after begin().
   bool seedDisplayedFrame(const uint8_t* frame);
+  // See PanelDriver::grayOnPanel. A frame retained for seeding is invalid while true.
+  bool grayOnPanel() const;
   void beginDisplayWork();
   void abortPostRefresh();
   bool postRefreshAborted() const;

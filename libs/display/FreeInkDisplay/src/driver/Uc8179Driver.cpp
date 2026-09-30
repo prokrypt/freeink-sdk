@@ -82,6 +82,20 @@ constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separatel
 constexpr uint8_t kDirectGrayOrder[lutbalance::kRows] = {0, 4, 2, 3, 1};
 constexpr lutbalance::LutSet kDirectGraySet = lutbalance::fromRows(kUltraChipDirectGray, kDirectGrayOrder);
 
+// The same set with the white (WW) and black (KK) level bytes grounded, frame
+// counts and repeats kept so the timing is unchanged. Used only when the B/W
+// base of this gray page is already on the panel: pure black/white pixels are
+// then at their target and hold, so only gray pixels move (no full-screen swing).
+constexpr lutbalance::LutSet makeDirectGrayHold() {
+  lutbalance::LutSet s = kDirectGraySet;
+  for (size_t g = 0; g < lutbalance::kRowBytes; g += lutbalance::kGroupBytes) {
+    s.row[lutbalance::Ww][g] = 0;
+    s.row[lutbalance::Kk][g] = 0;
+  }
+  return s;
+}
+constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
+
 // Balanced DU register LUT: changing pixels get `frames` away from the target
 // (invisible: they are already there), then `frames` to it, so every row nets
 // zero. VCOM, WW and KK hold: unchanged pixels are not driven. Row:
@@ -334,7 +348,12 @@ void Uc8179Driver::begin(EpdBus& bus) {
   if (_grayBase == nullptr) {
     _grayBase = static_cast<uint8_t*>(heap_caps_malloc(_bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
+  if (_grayMask == nullptr) {
+    _grayMask = static_cast<uint8_t*>(heap_caps_malloc(_bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
 #endif
+  _panelGrayValid = false;
+  _bwBaseShown = false;
   bus.reset(50);
   initController(bus);
 }
@@ -354,6 +373,8 @@ bool Uc8179Driver::skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallbac
   if (!_directGrayOnPanel || fallback != RefreshMode::Fast || _grayBase == nullptr) return false;
   memcpy(_grayBase, fb, _bufferSize);
   _grayBaseValid = true;
+  _panelGrayValid = false;  // _grayBase no longer holds the displayed gray page's base
+  _bwBaseShown = false;
   _absoluteInput = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;
@@ -459,6 +480,18 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // framebuffer for transition masks. Preserve the base before returning from
   // this potentially asynchronous entry point so the masks can be converted to
   // stock's absolute selector encoding later.
+  // Selective exit paint: after an overlay-path gray page, _grayBase holds its
+  // B/W base and _grayMask its gray pixels. Pure B/W pixels are at their base,
+  // so they get their true OLD (hold or a real transition); only gray pixels
+  // get the target's complement. Built here, before _grayBase is overwritten.
+  const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
+                              fb != nullptr;
+  if (selectivePaint) {
+    for (uint32_t i = 0; i < _bufferSize; i++) {
+      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~_grayMask[i]) | (~fb[i] & _grayMask[i]));
+    }
+  }
+  _panelGrayValid = false;
   if (_grayBase != nullptr && fb != nullptr) {
     memcpy(_grayBase, fb, _bufferSize);
     _grayBaseValid = true;
@@ -486,7 +519,14 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // 6 frames per phase left overlays drawn over direct gray visibly gray
     // (log 20260930T043445Z-ae927686: drawer at 41661). ponytail: 12 is 2x that
     // guess; tune on the panel if gray still shows or the paint feels slow.
-    streamPlane(bus, CMD_DTM1, fb, true);
+    // Every row of the paint LUT nets zero (Absolute), so a per-pixel mix of
+    // true and complement OLD stays balanced.
+    if (selectivePaint) {
+      streamPlane(bus, CMD_DTM1, _grayMask);
+      LOG_DBG("EPD", "8179: selective exit paint (gray pixels + changes only)");
+    } else {
+      streamPlane(bus, CMD_DTM1, fb, true);
+    }
     streamPlane(bus, CMD_DTM2, fb);
     _scrubLutFrames = 12;
     _complementOldPlane = true;
@@ -501,6 +541,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
       _oldPlaneValid = true;
       _bwPlanesSynced = true;
       _needFullClear = false;
+      _bwBaseShown = true;
       if (turnOff) {
         bus.cmd(CMD_POWER_OFF);
         bus.waitBusy(" 8179_POF");
@@ -535,6 +576,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   _pendingPartial = fast;
   _pendingTurnOff = turnOff;
   _pendingRefresh = true;
+  _bwBaseShown = true;  // fb in B/W once this refresh completes (gray passes wait for it)
   return true;
 }
 
@@ -792,6 +834,8 @@ bool Uc8179Driver::powerOnIdle(EpdBus& bus) {
 void Uc8179Driver::deepSleep(EpdBus& bus) {
   syncStaleOldPlane(bus);
   _directGrayOnPanel = false;
+  _panelGrayValid = false;
+  _bwBaseShown = false;
   _absoluteInput = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;
@@ -841,6 +885,7 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
     configureDirectGrayscale(bus);
     _absoluteInput = true;
     _directGrayPass = true;
+    _bwBaseShown = false;  // no B/W base: the full-swing set sets every pixel
     // Canonical VCOM/black/light/dark/white rows, mapped to absolute selectors.
     writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
     _directGrayPlanes = 0;
@@ -906,6 +951,8 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
     // With plane0=(base|maskLsb), stock plane1 is plane0 XOR maskMsb:
     // black 0^0=0, dark 1^1=0, light 0^1=1, white 1^0=1.
     streamPlaneXor(bus, CMD_DTM2, _grayBase, msb);
+    // plane0 XOR plane1 == msb: exactly the pixels that run the light/dark rows.
+    if (_grayMask != nullptr) memcpy(_grayMask, msb, _bufferSize);
     // The stock gray_aa routine restores BOTH controller planes to its B/W base
     // after the gray activation. Recover that base now while plane0 and the MSB
     // mask are still available: base = plane0 & plane1.
@@ -929,6 +976,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // zero) instead of the stock AA set, whose rows push one way. The overlay
   // path already built the same absolute selectors (DTM1 plane0, DTM2 plane1)
   // the direct rows are mapped to, so only the waveform changes.
+  // Overlay planes derive from the B/W base (black/white pixels == base), so
+  // when that base is on the panel the hold set moves only the gray pixels.
+  const bool overlayPlanes = !_directGrayPass && _absoluteGrayPlanes;
+  const bool holdBw = overlayPlanes && _bwBaseShown;
   if (!_directGrayPass) {
     bus.waitBusy(" 8179_gray_ready");
     if (!_absoluteGrayPlanes && !_absoluteInput) {
@@ -949,7 +1000,12 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       _isScreenOn = true;
     }
     configureDirectGrayscale(bus);
-    writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
+    if (holdBw) {
+      writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
+      LOG_DBG("EPD", "8179: direct gray, B/W pixels hold");
+    } else {
+      writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
+    }
     _directGrayPass = true;
     _directGrayPlanes = 3;
   }
@@ -964,6 +1020,9 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
   _directGrayOnPanel = true;
+  // _grayBase (B/W base) + _grayMask (gray pixels) now describe the panel.
+  _panelGrayValid = overlayPlanes && _grayBase != nullptr && _grayMask != nullptr;
+  _bwBaseShown = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;
   _absoluteInput = false;
