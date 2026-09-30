@@ -25,8 +25,12 @@ StyleSet defaultButtonStyles() {
   styles.selected.background = Paint::solid(Color::Black);
   styles.selected.foreground = Paint::solid(Color::White);
 
-  styles.focused.background = Paint::dither(Color::LightGray);
+  // Focus (and the tap flash) is a 2 px outline, not a dither fill: fewer
+  // changed pixels, all in lines, so it ghosts less on e-ink.
+  styles.focused.background = Paint::solid(Color::White);
   styles.focused.foreground = Paint::solid(Color::Black);
+  styles.focused.border = Paint::solid(Color::Black);
+  styles.focused.borderWidth = 2;
 
   styles.active.background = Paint::solid(Color::Black);
   styles.active.foreground = Paint::solid(Color::White);
@@ -45,8 +49,12 @@ StyleSet defaultListRowStyles() {
   styles.selected.background = Paint::solid(Color::Black);
   styles.selected.foreground = Paint::solid(Color::White);
 
-  styles.focused.background = Paint::dither(Color::LightGray);
+  // Focus (and the tap flash) is a 2 px outline, not a dither fill: fewer
+  // changed pixels, all in lines, so it ghosts less on e-ink.
+  styles.focused.background = Paint::solid(Color::White);
   styles.focused.foreground = Paint::solid(Color::Black);
+  styles.focused.border = Paint::solid(Color::Black);
+  styles.focused.borderWidth = 2;
 
   styles.active = styles.selected;
 
@@ -66,6 +74,7 @@ StyleSet defaultKeyStyles() {
   addOutline(styles.focused);
   addOutline(styles.active);
   addOutline(styles.disabled);
+  styles.focused.borderWidth = 2;  // white like normal: the thicker outline marks focus
   return styles;
 }
 
