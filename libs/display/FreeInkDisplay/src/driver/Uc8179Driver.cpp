@@ -118,24 +118,23 @@ constexpr lutbalance::LutSet makeDuLuts(const uint8_t frames) {
   return s;
 }
 
-// Smooth gray paint: held pixels (WW, KK) are otherwise never driven, so held
-// blacks faded (status bar, user 10:24 9/30) and held whites dirtied. They get
-// a balanced re-drive that ends on their own color, n frames away then n back,
-// at the end of the paint so it lands with the other pixels' final push. Every
-// row stays 2 x frames long: no added time. ponytail: n=8 is a guess (3 did not
-// stop the fade, a full 24+24 blinked); lower it if the re-drive shows.
-constexpr uint8_t kHeldRedriveFrames = 8;
+// Smooth gray paint: held black pixels (KK) are otherwise never driven. They
+// get a short balanced re-drive that ends black, n frames to white then n to
+// black, at the end of the paint; every row stays 2 x frames long (no added
+// time). Held whites are left alone: re-driving them (8+8) dipped the whole
+// background every turn (user 18:28 9/30: "why does softfast flash"). The
+// fade itself was most likely the reset VCOM (-0.10 V), now the panel's OTP
+// value (inferred). ponytail: 3 frames; drop it if the status bar holds.
+constexpr uint8_t kHeldRedriveFrames = 3;
 constexpr lutbalance::LutSet makeDuRedriveLuts(const uint8_t frames) {
   lutbalance::LutSet s = makeDuLuts(frames);
   const uint8_t n = frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames;
-  s.row[lutbalance::Kk][0] = 0x09;  // A, B ground; C 10 VDL (white), D 01 VDH (black)
-  s.row[lutbalance::Ww][0] = 0x06;  // A, B ground; C 01 VDH (black), D 10 VDL (white)
-  for (const uint8_t r : {lutbalance::Ww, lutbalance::Kk}) {
-    s.row[r][1] = static_cast<uint8_t>(frames - n);
-    s.row[r][2] = static_cast<uint8_t>(frames - n);
-    s.row[r][3] = n;
-    s.row[r][4] = n;
-  }
+  uint8_t* kk = s.row[lutbalance::Kk];
+  kk[0] = 0x09;  // A, B ground; C 10 VDL (white), D 01 VDH (black)
+  kk[1] = static_cast<uint8_t>(frames - n);
+  kk[2] = static_cast<uint8_t>(frames - n);
+  kk[3] = n;
+  kk[4] = n;
   return s;
 }
 
@@ -780,7 +779,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     // A DU scrub loads DTM1 with the target's complement, so the OLD plane is
     // not the pixel's real state and the set must balance per row (Absolute).
     lutbalance::LutSet storage;
-    // Smooth gray paints and bases re-drive held pixels (WW, KK); a full DU
+    // Smooth gray paints and bases re-drive held blacks (KK); a full DU
     // scrub complements every pixel, so those rows are unused there.
     writeRegisterLutPower(bus, vcomDc());
     writeLutSet(bus,
