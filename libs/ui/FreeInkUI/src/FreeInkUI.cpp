@@ -1001,5 +1001,15 @@ void drawBitmap(DrawTarget& target, Rect rect, BitmapRef bitmap, BitmapMode mode
   target.bitmap(rect, bitmap, mode, foreground);
 }
 
+void drawListMarginIcon(DrawTarget& target, const Rect& row, const Rect& content, const int16_t sidePad,
+                        const ListProps& props, const BitmapRef& icon, const Paint& foreground) {
+  int16_t size = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
+  if (size > sidePad) size = sidePad;
+  const int16_t x = props.rtl ? content.right() : row.x;
+  target.bitmap(Rect{static_cast<int16_t>(x + (sidePad - size) / 2),
+                     static_cast<int16_t>(content.y + (content.height - size) / 2), size, size},
+                icon, BitmapMode::Contain, foreground);
+}
+
 }  // namespace ui
 }  // namespace freeink
