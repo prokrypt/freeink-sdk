@@ -74,34 +74,7 @@ constexpr uint8_t CDI_INTERVAL = 0x07;  // CDI byte1, constant
 constexpr uint8_t PLL_40_HZ = 0x05;
 constexpr uint8_t PLL_50_HZ = 0x06;
 
-// B/W-dependent grayscale (AA) waveform LUTs — stock's REAL grayscale set (the
-// short 2-frame LUTs FUN_4214ebd0 actually uploads @app1 DROM 0x3c5d8994..),
-// uploaded in custom-LUT mode (PSR REG=1). Unlike the full-gray packet, here
-// the register command is sent SEPARATELY — blob byte0 is DATA, not the cmd.
-// Each LUT is 42 (0x2A) data bytes; only the first ~12 are non-zero. Level
-// select by (old=0x10/LSB, new=0x13/MSB): (0,0)=LUTKK black, (0,1)=LUTKW,
-// (1,0)=LUTWK, (1,1)=LUTWW white. This is the byte-exact stock set;
-// CrossPoint's overlay-mask representation is converted to these absolute
-// selectors before upload rather than modifying the waveform.
 constexpr uint8_t GRAY_LUT_LEN = 42;  // 0x2A data bytes, command sent separately
-struct GrayLut {
-  uint8_t cmd;
-  uint8_t data[GRAY_LUT_LEN];
-};
-constexpr GrayLut kGrayLuts[5] = {
-    {0x20, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTC / VCOM
-    {0x21, {0x08, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWW (white)
-    {0x22, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKW
-    {0x23, {0x20, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTWK
-    {0x24, {0x00, 0x02, 0x02, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01}},  // LUTKK (black)
-};
-
-// Separate dark gray from light gray for both text and image grayscale.
-// UC8179 datasheet R23h: each group is [rail selectors, four frame counts,
-// repeat count]. Shorten the VDL phase from two frames to one, moving that
-// frame to the following GND phase so the group remains six frames long.
-// Other rails, groups, and the light-gray/VCOM/black/white tables stay stock.
-constexpr uint8_t kDarkGrayLut[GRAY_LUT_LEN] = {0x20, 0x02, 0x01, 0x02, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01};
 
 // OEM XTF_PRE_BW_MID conditioning waveform. Each row is command-prefixed:
 // byte 0 selects LUT register 0x20..0x24 and the remaining 42 bytes are data.
@@ -115,16 +88,6 @@ constexpr uint8_t kGrayPreBwMid[5][43] = {
     {0x24, 0x00, 0x06, 0x01, 0x06, 0x06, 0x01, 0x10, 0x02, 0x04, 0x00, 0x00, 0x01},
 };
 // Upload sets in register order R20h..R24h, gated by UltraChipLutBalance.h.
-// Stock AA set with R23h replaced by kDarkGrayLut.
-constexpr lutbalance::LutSet makeGrayAaSet() {
-  lutbalance::LutSet s{};
-  for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
-    for (uint8_t i = 0; i < GRAY_LUT_LEN; ++i) {
-      s.row[r][i] = r == lutbalance::Wk ? kDarkGrayLut[i] : kGrayLuts[r].data[i];
-    }
-  }
-  return s;
-}
 constexpr lutbalance::LutSet makeGrayPreBwMidSet() {
   lutbalance::LutSet s{};
   for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
@@ -134,12 +97,11 @@ constexpr lutbalance::LutSet makeGrayPreBwMidSet() {
 }
 constexpr bool cmdOrderIsR20ToR24() {
   for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
-    if (kGrayLuts[r].cmd != 0x20 + r || kGrayPreBwMid[r][0] != 0x20 + r) return false;
+    if (kGrayPreBwMid[r][0] != 0x20 + r) return false;
   }
   return true;
 }
 static_assert(cmdOrderIsR20ToR24(), "gray LUT rows must be in register order R20h..R24h");
-constexpr lutbalance::LutSet kGrayAaSet = makeGrayAaSet();
 constexpr lutbalance::LutSet kGrayPreBwMidSet = makeGrayPreBwMidSet();
 // Direct gray rows are VCOM, black, light, dark, white; registers take VCOM,
 // white, light, dark, black.
@@ -487,6 +449,7 @@ void Uc8179Driver::displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshM
   // (a quick turn cancelled it), the panel is plain B/W: use the ~110 ms
   // shorter DU base, as Factory.bin does for its first AA page.
   if (fallback != RefreshMode::Fast || !_redriveAfterGray || !_oldPlaneValid || _needFullClear) {
+    _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
     display(bus, fb, nullptr, fallback, turnOff);
     return;
   }
@@ -504,6 +467,7 @@ bool Uc8179Driver::displayGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb, Ref
   // Same routing as displayGrayscaleBase(), with the B/W fallback through the
   // async split. displayStart() always leaves its refresh pending.
   if (fallback != RefreshMode::Fast || !_redriveAfterGray || !_oldPlaneValid || _needFullClear) {
+    _grayBaseOverDirect = fallback == RefreshMode::Fast && _directGrayOnPanel;
     return displayStart(bus, fb, nullptr, fallback, turnOff);
   }
   _pendingGrayPre = transitionGrayscaleBaseStart(bus, fb);
@@ -575,6 +539,8 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   syncStaleOldPlane(bus);
   const bool paintDestination = _directGrayOnPanel;
   _directGrayOnPanel = false;
+  const bool grayBaseOverDirect = _grayBaseOverDirect && paintDestination;
+  _grayBaseOverDirect = false;
   restoreBwConfiguration(bus);
   _absoluteInput = false;
   _directGrayPass = false;
@@ -623,6 +589,21 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     _complementOldPlane = false;
     bus.waitRefreshComplete(" 8179_BW_TARGET_DRF");
     bus.cmd(CMD_PARTIAL_OUT);
+    if (grayBaseOverDirect) {
+      // The page's direct-gray pass follows and drives every pixel absolutely,
+      // so the painted B/W target is the base: no OTP Full after it.
+      bus.cmdData2(CMD_VCOM_DATA_INTERVAL, _cfg.cdiIdle, CDI_INTERVAL);
+      streamPlane(bus, CMD_DTM1, fb);
+      _oldPlaneValid = true;
+      _bwPlanesSynced = true;
+      _needFullClear = false;
+      if (turnOff) {
+        bus.cmd(CMD_POWER_OFF);
+        bus.waitBusy(" 8179_POF");
+        _isScreenOn = false;
+      }
+      return true;
+    }
   }
 
   // A Half-as-scrub keeps the experiment's windows, PLL and resync skip out.
@@ -1107,107 +1088,60 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
   syncStaleOldPlane(bus);
-  // fb = the reader's current frame; used to re-seed the B/W baseline below.
-  (void)lut;  // waveform comes from the built-in gray LUT set (kGrayLuts)
+  (void)fb;
+  (void)lut;  // waveform comes from kDirectGraySet
+  (void)factoryMode;
 
-  // The base refresh must be fully complete before we upload LUTs / stream — the
-  // controller drops LUT/DTM/DRF writes while BUSY.
-  if (_directGrayPass) {
-    if (_directGrayPlanes != 3) return;
-    bus.waitBusy(" 8179_direct_ready");
+  // Every gray page runs the balanced direct-gray waveform (every row nets
+  // zero) instead of the stock AA set, whose rows push one way. The overlay
+  // path already built the same absolute selectors (DTM1 plane0, DTM2 plane1)
+  // the direct rows are mapped to, so only the waveform changes.
+  if (!_directGrayPass) {
+    bus.waitBusy(" 8179_gray_ready");
+    if (!_absoluteGrayPlanes && !_absoluteInput) {
+      // Raw overlay masks (no base snapshot) are not absolute selectors: keep
+      // the B/W base on screen and resync from scratch.
+      LOG_DBG("EPD", "8179: gray pass skipped, no absolute planes");
+      _absoluteInput = false;
+      _needFullClear = true;
+      _oldPlaneValid = false;
+      _bwPlanesSynced = false;
+      return;
+    }
+    // Power on first so the setup keeps power and never resets the controller,
+    // which would lose the planes already in DTM1/DTM2.
     if (!_isScreenOn) {
       bus.cmd(CMD_POWER_ON);
-      bus.waitBusy(" 8179_direct_PON");
+      bus.waitBusy(" 8179_gray_PON");
       _isScreenOn = true;
     }
-    logSpiBeforeDrf("direct_gray");
-    bus.cmd(CMD_DISPLAY_REFRESH);
-    bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
-    _directGrayOnPanel = true;
-    _directGrayPass = false;
-    _directGrayPlanes = 0;
-    _absoluteInput = false;
-    _needFullClear = true;
-    _oldPlaneValid = false;
-    _redriveAfterGray = false;
-    if (turnOff) {
-      bus.cmd(CMD_POWER_OFF);
-      bus.waitBusy(" 8179_direct_POF");
-      _isScreenOn = false;
-    }
-    return;
+    configureDirectGrayscale(bus);
+    writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
+    _directGrayPass = true;
+    _directGrayPlanes = 3;
   }
-  bus.waitBusy(" 8179_gray_ready");
-  _bwPlanesSynced = false;
-
-  // Custom-LUT grayscale uses the stock gray_aa sequence (FUN_4214ec2c),
-  // with a separate dark-gray table and FreeInk's SHL bit: PSR 0x3F (REG bit5=1
-  // custom LUT; the B/W path masks to 0x1F/OTP) -> upload the 5 short LUTs
-  // separately, 42 data bytes each) -> CDI 0x29/07 -> PON -> DRF. Unlike the
-  // gray_full path, Factory.bin's gray_aa function sends no POF afterward. It
-  // also sends no E0/E5/booster here; those belong to prebw/gray_full.
-  bus.cmd(CMD_PANEL_SETTING);
-  bus.data(_cfg.psr0);  // 0x3F: REG=1 (custom LUT) + KW + SHL
-  bus.data(_cfg.psr1);
-  // Vendor exemption: stock AA set (R23h shortened by kDarkGrayLut); every
-  // gray row is a one-way VDL push: WW -1, KW -2, WK -1 frames.
-  writeLutSet(bus, lutbalance::vendorTable<kGrayAaSet>());
-  bus.cmd(CMD_VCOM_DATA_INTERVAL);
-  // Factory.bin FUN_4214ec2c calls vtable +0x118 unconditionally; the UC8179
-  // getter at 0x422988b0 returns 0x29. Unlike UC8279, it does not switch the AA
-  // activation to the idle/hold CDI after the first page.
-  bus.data(_cfg.cdiActive);
-  bus.data(CDI_INTERVAL);
-  _grayRefreshedOnce = true;
-
-  // Absolute images start from a black/white base. Give the short gray AA LUTs
-  // 25% longer to move their gray pixels toward white, then restore the stock
-  // rate so ordinary black/white refresh timing is unchanged.
-  const bool slowerImageWaveform = factoryMode && _absoluteInput;
-  if (slowerImageWaveform) {
-    bus.cmd(CMD_PLL_CONTROL);
-    bus.data(PLL_40_HZ);
-  }
-
+  if (_directGrayPlanes != 3) return;
+  bus.waitBusy(" 8179_direct_ready");
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
-    bus.waitBusy(" 8179_gray_PON");
+    bus.waitBusy(" 8179_direct_PON");
     _isScreenOn = true;
   }
-  logSpiBeforeDrf("gray");
+  logSpiBeforeDrf("direct_gray");
   bus.cmd(CMD_DISPLAY_REFRESH);
-  bus.waitBusy(" 8179_gray_split_DRF");
-  if (slowerImageWaveform) {
-    bus.cmd(CMD_PLL_CONTROL);
-    bus.data(PLL_50_HZ);
-  }
-  // Deliberately remain powered. FUN_4214ec2c returns after DRF and RAM/base
-  // bookkeeping without issuing command 0x02; deepSleep() still powers down.
-  // Its bookkeeping writes the clean B/W base to BOTH DTM1 and DTM2. Besides
-  // preserving the next transition's old frame, this prevents a stale gray
-  // selector plane from being reused by a later refresh (especially sleep).
-  if (_grayBaseValid) {
-    streamPlane(bus, CMD_DTM1, _grayBase);
-    streamPlane(bus, CMD_DTM2, _grayBase);
-    _oldPlaneValid = true;
-    _bwPlanesSynced = true;
-    _needFullClear = false;
-  }
-  _grayBaseValid = false;
-  _absoluteGrayPlanes = false;
-
-  // `fb` is the MSB mask here, not the B/W frame; the recovered base above was
-  // used for the RAM restore. Physically, AA still leaves intermediate charge
-  // that a plain DU diff does not neutralize. Route the next Fast B/W base through
-  // stock's non-flashing transition; an explicit Half remains the strong purge.
-  (void)fb;
-  _redriveAfterGray = true;
-  _absoluteInput = false;
+  bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
+  _directGrayOnPanel = true;
   _directGrayPass = false;
   _directGrayPlanes = 0;
-  if (factoryMode && turnOff && _isScreenOn) {
+  _absoluteInput = false;
+  _needFullClear = true;
+  _oldPlaneValid = false;
+  _redriveAfterGray = false;
+  _grayBaseValid = false;
+  _absoluteGrayPlanes = false;
+  if (turnOff) {
     bus.cmd(CMD_POWER_OFF);
-    bus.waitBusy(" 8179_absolute_POF");
+    bus.waitBusy(" 8179_direct_POF");
     _isScreenOn = false;
   }
 }

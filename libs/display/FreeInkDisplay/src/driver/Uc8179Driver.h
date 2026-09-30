@@ -178,6 +178,7 @@ class Uc8179Driver : public PanelDriver {
   // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).
   uint8_t _scrubLutFrames = 0;
   bool _complementOldPlane = false;  // this refresh's DTM1 is the target's complement (DU scrub)
+  bool _grayBaseOverDirect = false;  // this refresh is a gray page's B/W base over direct gray
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;
