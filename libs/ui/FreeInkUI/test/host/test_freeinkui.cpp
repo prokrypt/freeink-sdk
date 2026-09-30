@@ -777,6 +777,41 @@ void testListRevealActionTargetsOneRow() {
   CHECK_EQ(hits.route(tap).action, 5);
 }
 
+void testListMarginIconLeavesRowInPlace() {
+  static const uint8_t iconBits[72]{};
+  int16_t labelX[2] = {-1, -1};
+  Rect mark{};
+  for (int pass = 0; pass < 2; ++pass) {
+    FakeDrawTarget draw;
+    DeviceContext device = makeDevice();
+    InputSnapshot input;
+    InteractionBuffer<8> hits;
+    Frame<8> frame(draw, device, input, hits);
+    ListItem item{};
+    item.label = "Feed";
+    item.value = ">";
+    if (pass == 1) {
+      item.icon = BitmapRef{iconBits, 24, 24};
+      item.iconInMargin = true;
+    }
+    ListProps props;
+    props.items = &item;
+    props.count = 1;
+    props.rowHeight = 40;
+    props.sidePadding = 8;
+    props.scrollIndicator = false;
+    list(frame, Rect{0, 0, 200, 40}, props);
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const auto& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Text && op.align != TextAlign::Right) labelX[pass] = op.rect.x;
+      if (op.kind == FakeDrawTarget::Op::Bitmap) mark = op.rect;
+    }
+  }
+  CHECK(labelX[0] >= 8);
+  CHECK_EQ(labelX[1], labelX[0]);                      // label did not move
+  CHECK(mark.width == 8 && mark.x >= 0 && mark.right() <= 8);  // scaled into the padding
+}
+
 void testListClampsBadTopIndex() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -5593,6 +5628,7 @@ int main() {
   testListHelpers();
   testListVirtualization();
   testListRevealActionTargetsOneRow();
+  testListMarginIconLeavesRowInPlace();
   testListClampsBadTopIndex();
   testListItemsWindow();
   testListRowProvider();
