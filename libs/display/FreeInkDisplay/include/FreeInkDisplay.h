@@ -544,6 +544,10 @@ void requestUc8179DuScrubNext();
 // controllers ignore it.
 void requestUc8179HalfAsDuScrubNext(uint8_t frames);
 Uc8179KbdTiming uc8179KbdTiming();
+// millis() when the running UC8179 refresh's full-screen swing becomes visible
+// (it may lie ahead: direct gray holds white for its first 24 frames), 0 when
+// none runs or the background holds. Any task; other controllers return 0.
+uint32_t uc8179FlashSwingMs();
 // The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
 // 2 x `frames` frames (null discharge; pixels do not move). Balanced by
 // construction. One shot; other controllers ignore it.

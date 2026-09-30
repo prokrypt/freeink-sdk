@@ -5,6 +5,8 @@
 #include <Logging.h>
 #include <string.h>
 
+#include <atomic>
+
 #include "../lut/UltraChipDirectGrayLuts.h"
 #include "../lut/UltraChipLutBalance.h"
 #include "FreeInkDisplay.h"
@@ -182,6 +184,21 @@ uint8_t gHalfScrubFrames = 0;  // next Half refresh: DU scrub with these LUT fra
 Uc8179KbdTiming gKbdTiming;
 unsigned long gUploadStartMs = 0;
 unsigned long gDrfStartMs = 0;
+// Flash duck (uc8179FlashSwingMs). gSwingMs: millis() when the running
+// refresh's full-screen swing becomes visible (| 1), 0 when none runs or its
+// background holds. gSwingEndMs bounds it if no wait observes the end.
+std::atomic<uint32_t> gSwingMs{0};
+std::atomic<uint32_t> gSwingEndMs{0};
+// Frame time per waveform kind, re-measured at the end of every run of it: the
+// OTP GC (one "frame" = the whole refresh), register DU and direct gray run at
+// different rates. Defaults from logs/device/20260930T192900Z-c2123894-psram.txt
+// L76 (boot Full 1493 ms), L1175 (24-frame DU paint 662 ms), L942 (50-frame
+// direct gray 1189 ms).
+uint32_t gGcFrameUs = 1500000;
+uint32_t gDuFrameUs = 27600;
+uint32_t gGrayFrameUs = 23800;
+uint32_t* gSwingFrameUs = nullptr;  // the kind running now; null = don't re-measure
+uint16_t gSwingFrames = 0;
 bool gExpActive = false;  // this refresh runs the experiment
 bool gExpPll = false;     // this refresh changed the PLL
 
@@ -221,6 +238,50 @@ uint8_t gNullFrames = 0;
 void requestUc8179NullNext(const uint8_t frames) { gNullFrames = frames; }
 
 Uc8179KbdTiming uc8179KbdTiming() { return gKbdTiming; }
+
+uint32_t uc8179FlashSwingMs() {
+  const uint32_t swingMs = gSwingMs.load(std::memory_order_relaxed);
+  if (swingMs == 0) return 0;
+  const uint32_t endMs = gSwingEndMs.load(std::memory_order_relaxed);
+  return static_cast<int32_t>(millis() - endMs) > 0 ? 0 : swingMs;
+}
+
+namespace {
+// Right before DRF. The swing starts swingFrame frames in (< 0: the background
+// holds, no swing); frameUs/totalFrames are re-measured when BUSY releases.
+void swingStart(const int swingFrame, uint32_t* const frameUs, const uint16_t totalFrames, const bool measure) {
+  gSwingFrameUs = measure ? frameUs : nullptr;
+  gSwingFrames = totalFrames;
+  if (swingFrame < 0 || frameUs == nullptr) return;
+  const uint32_t now = millis();
+  const uint32_t runMs = *frameUs * totalFrames / 1000;
+  gSwingEndMs.store(now + runMs + runMs / 2 + 100, std::memory_order_relaxed);  // slack: Full after a shorter Half
+  gSwingMs.store((now + *frameUs * static_cast<uint32_t>(swingFrame) / 1000) | 1, std::memory_order_relaxed);
+}
+
+// When BUSY releases after the DRF sent at drfStartMs.
+void swingEnd(const unsigned long drfStartMs) {
+  gSwingMs.store(0, std::memory_order_relaxed);
+  if (gSwingFrameUs && gSwingFrames) {
+    *gSwingFrameUs = static_cast<uint32_t>(millis() - drfStartMs) * 1000 / gSwingFrames;
+  }
+  gSwingFrameUs = nullptr;
+}
+
+// Direct gray: frames before the white row first drives (white pixels hold
+// until then, so the background swings from here), and the whole run.
+constexpr uint16_t directGrayFrames(const bool untilWhiteDrives) {
+  uint16_t frames = 0;
+  for (size_t g = 0; g + 5 < sizeof(kUltraChipDirectGray[4]); g += 6) {
+    if (untilWhiteDrives && kUltraChipDirectGray[4][g] != 0) break;
+    const uint16_t group = kUltraChipDirectGray[4][g + 1] + kUltraChipDirectGray[4][g + 2] +
+                           kUltraChipDirectGray[4][g + 3] + kUltraChipDirectGray[4][g + 4];
+    frames += group * (kUltraChipDirectGray[4][g + 5] ? kUltraChipDirectGray[4][g + 5] : 1);
+  }
+  return frames;
+}
+static_assert(directGrayFrames(true) == 24 && directGrayFrames(false) == 50, "direct gray swing timing");
+}  // namespace
 
 #if FREEINK_UC8179_PANEL_TEMP
 bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs) {
@@ -655,10 +716,13 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     streamPlane(bus, CMD_DTM2, fb);
     _scrubLutFrames = coldScaledFrames(kPaintFrames);
     _complementOldPlane = true;
+    _selectivePaint = selectivePaint;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
     _complementOldPlane = false;
+    _selectivePaint = false;
     bus.waitRefreshComplete(" 8179_BW_TARGET_DRF");
+    swingEnd(gDrfStartMs);
     bus.cmd(CMD_PARTIAL_OUT);
     if (paintIsRefresh) {
       bus.cmdData2(CMD_VCOM_DATA_INTERVAL, _cfg.cdiIdle, CDI_INTERVAL);
@@ -734,8 +798,8 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // EXPERIMENT T4: REG set -> register LUTs below instead of OTP.
   bus.data(static_cast<uint8_t>(kbdLut ? _cfg.psr0 : (_cfg.psr0 & 0xDF)));  // 0x1F: REG cleared -> OTP + SHL
   bus.data(_cfg.psr1);
+  const uint8_t frames = _scrubLutFrames ? _scrubLutFrames : (gKbdExp.lutFrames ? gKbdExp.lutFrames : 3);
   if (kbdLut) {
-    const uint8_t frames = _scrubLutFrames ? _scrubLutFrames : (gKbdExp.lutFrames ? gKbdExp.lutFrames : 3);
     // A DU scrub loads DTM1 with the target's complement, so the OLD plane is
     // not the pixel's real state and the set must balance per row (Absolute).
     lutbalance::LutSet storage;
@@ -773,6 +837,19 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   if (fast) bus.cmd(CMD_PARTIAL_IN);  // PTIN — whole-panel partial (no 0x90 window)
   gKbdTiming.drfRows = static_cast<uint16_t>(_h);
   logSpiBeforeDrf(fast ? "fast" : "full");
+  // Flash duck: the OTP GC (Full/Half) swings from its first frame; a DU with
+  // a complement OLD plane drives white pixels black first (not a selective
+  // paint: there held pixels keep their true OLD); the smooth re-drive swings
+  // held whites for its last 2n frames. OTP Fast, DU transitions and null hold.
+  const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut;
+  int swingFrame = -1;
+  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint)) {
+    swingFrame = 0;
+  } else if (redrive) {
+    swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
+  }
+  swingStart(swingFrame, !fast ? &gGcFrameUs : kbdLut && !_nullLut ? &gDuFrameUs : nullptr,
+             !fast ? 1 : 2 * frames, !gExpPll);
   gDrfStartMs = millis();
   gKbdTiming.uploadMs = static_cast<uint32_t>(gDrfStartMs - gUploadStartMs);
   bus.cmd(CMD_DISPLAY_REFRESH);
@@ -819,6 +896,7 @@ void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
   bus.waitRefreshComplete(" 8179_DRF");
+  swingEnd(gDrfStartMs);
   gKbdTiming.doneMs = millis();
   gKbdTiming.drfMs = static_cast<uint32_t>(gKbdTiming.doneMs - gDrfStartMs);
   gKbdTiming.count++;
@@ -1086,7 +1164,8 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       _isScreenOn = true;
     }
     configureDirectGrayscale(bus);
-    if (holdBw && _smoothGray) {
+    _holdBwPass = holdBw && _smoothGray;
+    if (_holdBwPass) {
       writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
     } else {
@@ -1103,8 +1182,13 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _isScreenOn = true;
   }
   logSpiBeforeDrf("direct_gray");
+  // The hold set (smooth gray) keeps black/white pixels: no swing.
+  swingStart(_holdBwPass ? -1 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true);
+  const unsigned long grayDrfMs = millis();
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
+  swingEnd(grayDrfMs);
+  _holdBwPass = false;
   _directGrayOnPanel = true;
   // _grayBase (B/W base) + _grayMask (gray pixels) now describe the panel.
   _panelGrayValid = overlayPlanes && _grayBase != nullptr && _grayMask != nullptr;
