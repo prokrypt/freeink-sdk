@@ -551,6 +551,11 @@ uint32_t uc8179FlashSwingMs();
 // When that refresh is expected to end (millis(), from the last measured run of
 // its waveform); valid while uc8179FlashSwingMs() is nonzero.
 uint32_t uc8179FlashSwingDoneMs();
+// Which waveform that refresh runs, for per-kind flash duck timing: a direct
+// gray (AA) page, an OTP GC Half/Full, or a balanced DU paint (menus and the
+// drawer over gray, scrubs, re-drives; same LUT and length either way).
+enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint };
+Uc8179FlashKind uc8179FlashKind();
 // The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
 // 2 x `frames` frames (null discharge; pixels do not move). Balanced by
 // construction. One shot; other controllers ignore it.

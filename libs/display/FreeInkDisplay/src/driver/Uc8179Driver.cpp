@@ -220,6 +220,7 @@ unsigned long gDrfStartMs = 0;
 std::atomic<uint32_t> gSwingMs{0};
 std::atomic<uint32_t> gSwingEndMs{0};
 std::atomic<uint32_t> gSwingDoneMs{0};  // expected BUSY release (measured run)
+std::atomic<Uc8179FlashKind> gSwingKind{Uc8179FlashKind::Full};
 // Frame time per waveform kind, re-measured at the end of every run of it: the
 // OTP GC (one "frame" = the whole refresh), register DU and direct gray run at
 // different rates. Defaults from logs/device/20260930T192900Z-c2123894-psram.txt
@@ -279,13 +280,17 @@ uint32_t uc8179FlashSwingMs() {
 
 uint32_t uc8179FlashSwingDoneMs() { return gSwingDoneMs.load(std::memory_order_relaxed); }
 
+Uc8179FlashKind uc8179FlashKind() { return gSwingKind.load(std::memory_order_relaxed); }
+
 namespace {
 // Right before DRF. The swing starts swingFrame frames in (< 0: the background
 // holds, no swing); frameUs/totalFrames are re-measured when BUSY releases.
-void swingStart(const int swingFrame, uint32_t* const frameUs, const uint16_t totalFrames, const bool measure) {
+void swingStart(const int swingFrame, uint32_t* const frameUs, const uint16_t totalFrames, const bool measure,
+                const Uc8179FlashKind kind) {
   gSwingFrameUs = measure ? frameUs : nullptr;
   gSwingFrames = totalFrames;
   if (swingFrame < 0 || frameUs == nullptr) return;
+  gSwingKind.store(kind, std::memory_order_relaxed);
   const uint32_t now = millis();
   const uint32_t runMs = *frameUs * totalFrames / 1000;
   gSwingDoneMs.store(now + runMs, std::memory_order_relaxed);
@@ -939,19 +944,19 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   gKbdTiming.drfRows = static_cast<uint16_t>(_h);
   logSpiBeforeDrf(fast ? "fast" : "full");
   // Flash duck: the OTP GC (Full/Half) swings from its first frame; a DU with
-  // a complement OLD plane drives white pixels black first (not a selective
-  // paint: there held pixels keep their true OLD); the smooth re-drive swings
-  // held whites for its last 2n frames, except under a Softfast page's gray
-  // base (kk3: that turn shows no flash). OTP Fast, DU transitions and null hold.
+  // a complement OLD plane drives white pixels black first (a selective paint,
+  // e.g. the drawer over gray, only its gray pixels); the smooth re-drive swings held
+  // whites for its last 2n frames, except under a Softfast page's gray base
+  // (kk3: that turn shows no flash). OTP Fast, DU transitions and null hold.
   const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase;
   int swingFrame = -1;
-  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint)) {
+  if (!fast || (kbdLut && !_nullLut && _complementOldPlane)) {
     swingFrame = 0;
   } else if (redrive) {
     swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
   }
   swingStart(swingFrame, !fast ? &gGcFrameUs : kbdLut && !_nullLut ? &gDuFrameUs : nullptr,
-             !fast ? 1 : 2 * frames, !gExpPll);
+             !fast ? 1 : 2 * frames, !gExpPll, !fast ? Uc8179FlashKind::Full : Uc8179FlashKind::Paint);
   gDrfStartMs = millis();
   gKbdTiming.uploadMs = static_cast<uint32_t>(gDrfStartMs - gUploadStartMs);
   bus.cmd(CMD_DISPLAY_REFRESH);
@@ -1285,7 +1290,8 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   }
   logSpiBeforeDrf("direct_gray");
   // The hold set (smooth gray) keeps black/white pixels: no swing.
-  swingStart(_holdBwPass ? -1 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true);
+  swingStart(_holdBwPass ? -1 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true,
+             Uc8179FlashKind::Gray);
   const unsigned long grayDrfMs = millis();
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
