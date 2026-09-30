@@ -548,6 +548,9 @@ Uc8179KbdTiming uc8179KbdTiming();
 // (it may lie ahead: direct gray holds white for its first 24 frames), 0 when
 // none runs or the background holds. Any task; other controllers return 0.
 uint32_t uc8179FlashSwingMs();
+// When that refresh is expected to end (millis(), from the last measured run of
+// its waveform); valid while uc8179FlashSwingMs() is nonzero.
+uint32_t uc8179FlashSwingDoneMs();
 // The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
 // 2 x `frames` frames (null discharge; pixels do not move). Balanced by
 // construction. One shot; other controllers ignore it.
