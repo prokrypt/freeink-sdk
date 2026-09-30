@@ -3269,14 +3269,17 @@ void testDefaultStyles() {
   StyleSet button = defaultButtonStyles();
   CHECK(button.normal.border.kind == PaintKind::None);
   CHECK(button.selected.border.kind == PaintKind::None);
-  CHECK(button.focused.border.kind == PaintKind::None);
+  CHECK_EQ(button.focused.border.kind, PaintKind::Solid);  // focus is a 2 px outline
+  CHECK_EQ(button.focused.borderWidth, 2);
+  CHECK_EQ(button.focused.background.color, Color::White);
   CHECK(button.active.border.kind == PaintKind::None);
   CHECK(button.disabled.border.kind == PaintKind::None);
 
   StyleSet row = defaultListRowStyles();
   CHECK(row.normal.border.kind == PaintKind::None);
   CHECK(row.selected.border.kind == PaintKind::None);
-  CHECK(row.focused.border.kind == PaintKind::None);
+  CHECK_EQ(row.focused.border.kind, PaintKind::Solid);
+  CHECK_EQ(row.focused.borderWidth, 2);
 
   StyleSet popup = defaultPopupStyles();
   CHECK(popup.normal.border.kind == PaintKind::None);
@@ -3287,7 +3290,7 @@ void testDefaultStyles() {
   for (const BoxStyle* style : {&key.normal, &key.selected, &key.focused, &key.active, &key.disabled}) {
     CHECK_EQ(style->border.kind, PaintKind::Solid);
     CHECK_EQ(style->border.color, Color::Black);
-    CHECK_EQ(style->borderWidth, 1);
+    CHECK_EQ(style->borderWidth, style == &key.focused ? 2 : 1);
   }
 }
 

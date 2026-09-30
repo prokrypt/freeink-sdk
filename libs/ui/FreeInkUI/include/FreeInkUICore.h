@@ -1612,7 +1612,7 @@ inline StyleSet selectedPlainListRowStyles() {
 }
 inline StyleSet
 outlinedButtonStyles(const int radius = 0,
-                     const Color selectedBackground = Color::LightGray) {
+                     const Color selectedBackground = Color::White) {
   StyleSet styles = defaultButtonStyles();
   styles.normal.background = Paint::solid(Color::White);
   styles.normal.foreground = Paint::solid(Color::Black);
@@ -1622,18 +1622,18 @@ outlinedButtonStyles(const int radius = 0,
   styles.selected.background = Paint::solid(selectedBackground);
   styles.selected.foreground = Paint::solid(Color::Black);
   styles.selected.border = Paint::solid(Color::Black);
-  styles.selected.borderWidth = 1;
+  styles.selected.borderWidth = 2;  // thicker outline, not a dither fill, marks selection
   styles.selected.radius = clampRadius(radius);
   return styles;
 }
 
 // Borderless controls for chrome-light apps: nothing drawn at rest (no box,
-// no border), a light fill for selected/pressed feedback. Set as
+// no border), a 2 px outline for selected/pressed feedback. Set as
 // ThemeTokens.button (and pass to dropdowns/rows) for the "just text on
 // paper" look.
 inline StyleSet
 flatButtonStyles(const int radius = 0,
-                 const Color selectedBackground = Color::LightGray) {
+                 const Color selectedBackground = Color::White) {
   StyleSet styles = defaultButtonStyles();
   styles.normal.background = Paint{};
   styles.normal.foreground = Paint::solid(Color::Black);
@@ -1642,8 +1642,8 @@ flatButtonStyles(const int radius = 0,
   styles.normal.radius = clampRadius(radius);
   styles.selected.background = Paint::solid(selectedBackground);
   styles.selected.foreground = Paint::solid(Color::Black);
-  styles.selected.border = Paint{};
-  styles.selected.borderWidth = 0;
+  styles.selected.border = Paint::solid(Color::Black);
+  styles.selected.borderWidth = 2;
   styles.selected.radius = clampRadius(radius);
   return styles;
 }
