@@ -5,7 +5,9 @@
 #include <Logging.h>
 #include <string.h>
 
+#include <array>
 #include <atomic>
+#include <utility>
 
 #include "../lut/UltraChipDirectGrayLuts.h"
 #include "../lut/UltraChipLutBalance.h"
@@ -19,6 +21,13 @@
 
 namespace freeink {
 namespace {
+// FREEINK_TUNING (debug builds): settable through setUc8179Tuning(); otherwise
+// compile-time constants.
+#if FREEINK_TUNING
+#define UC8179_TUNABLE
+#else
+#define UC8179_TUNABLE constexpr
+#endif
 
 // A plane upload is ~60 KB. Writing it one 100-byte row per SPI call spent a
 // large share of each upload in per-call overhead, so rows (mirrored, plus the
@@ -127,10 +136,13 @@ constexpr lutbalance::LutSet makeDuLuts(const uint8_t frames) {
 // background every turn (user 18:28 9/30: "why does softfast flash"). The
 // fade itself was most likely the reset VCOM (-0.10 V), now the panel's OTP
 // value (inferred). ponytail: 3 frames; drop it if the status bar holds.
-constexpr uint8_t kHeldRedriveFrames = 3;
+// Tuning picks n in 0..16, each its own gated generator (KK only).
+constexpr uint8_t kHeldRedriveMax = 16;
+UC8179_TUNABLE uint8_t kHeldRedriveFrames = 3;
+template <uint8_t N>
 constexpr lutbalance::LutSet makeDuRedriveLuts(const uint8_t frames) {
   lutbalance::LutSet s = makeDuLuts(frames);
-  const uint8_t n = frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames;
+  const uint8_t n = frames < N ? frames : N;
   uint8_t* kk = s.row[lutbalance::Kk];
   kk[0] = 0x09;  // A, B ground; C 10 VDL (white), D 01 VDH (black)
   kk[1] = static_cast<uint8_t>(frames - n);
@@ -150,6 +162,22 @@ constexpr lutbalance::LutSet makeNullLuts(const uint8_t frames) {
     s.row[r][5] = 0x01;
   }
   return s;
+}
+
+using RedriveFn = lutbalance::CheckedLuts (*)(uint8_t, lutbalance::LutSet&);
+template <size_t... N>
+constexpr std::array<RedriveFn, sizeof...(N)> redriveTable(std::index_sequence<N...>) {
+  return {{&lutbalance::checkedGenerator<makeDuRedriveLuts<N>, lutbalance::Policy::Absolute>...}};
+}
+
+lutbalance::CheckedLuts checkedRedrive(const uint8_t frames, lutbalance::LutSet& storage) {
+#if FREEINK_TUNING
+  static constexpr auto table = redriveTable(std::make_index_sequence<kHeldRedriveMax + 1>{});
+  return table[kHeldRedriveFrames](frames, storage);
+#else
+  return lutbalance::checkedGenerator<makeDuRedriveLuts<kHeldRedriveFrames>, lutbalance::Policy::Absolute>(frames,
+                                                                                                           storage);
+#endif
 }
 
 // The only LUT register writer in this driver: takes gated sets only.
@@ -210,14 +238,14 @@ bool gExpPll = false;     // this refresh changed the PLL
 // the read re-attaches SPI, so it runs while the panel idles (before the idle
 // booster-off, at most once per PANEL_TEMP_PERIOD_MS). A panel that never idles
 // that long still samples after a refresh once per PANEL_TEMP_REFRESH_PERIOD_MS.
-constexpr unsigned long PANEL_TEMP_PERIOD_MS = 60000;
-constexpr unsigned long PANEL_TEMP_REFRESH_PERIOD_MS = 300000;
+UC8179_TUNABLE unsigned long PANEL_TEMP_PERIOD_MS = 60000;
+UC8179_TUNABLE unsigned long PANEL_TEMP_REFRESH_PERIOD_MS = 300000;
 // Below this panel temperature the forced 30 C TSSET of full refreshes is
 // replaced by the measured value (the OTP then picks its longer cold waveform)
 // and Half-as-scrub gets a third more LUT frames. Samples older than
 // PANEL_TEMP_MAX_AGE_MS are ignored.
-constexpr int8_t PANEL_COLD_C = 15;
-constexpr unsigned long PANEL_TEMP_MAX_AGE_MS = 600000;
+UC8179_TUNABLE int8_t PANEL_COLD_C = 15;
+UC8179_TUNABLE unsigned long PANEL_TEMP_MAX_AGE_MS = 600000;
 int8_t gPanelTempC = 0;
 unsigned long gPanelTempMs = 0;
 unsigned long gPanelTempTryMs = 0;
@@ -312,12 +340,14 @@ bool coldPanel(int8_t& celsius) {
 }
 
 // DU frames per phase for the exit paint and the smooth gray base.
-constexpr uint8_t kPaintFrames = 12;
+UC8179_TUNABLE uint8_t kPaintFrames = 12;
 
-// Register-LUT DU frames get a third more on a cold panel (slower particles).
+// Register-LUT DU frames get a third more on a cold panel (slower particles):
+// frames / kColdDivisor more, 0 = none.
+UC8179_TUNABLE uint8_t kColdDivisor = 3;
 uint8_t coldScaledFrames(const uint8_t frames) {
   int8_t celsius = 0;
-  return coldPanel(celsius) ? static_cast<uint8_t>(frames + frames / 3) : frames;
+  return coldPanel(celsius) && kColdDivisor ? static_cast<uint8_t>(frames + frames / kColdDivisor) : frames;
 }
 }  // namespace
 
@@ -880,7 +910,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     writeLutSet(bus,
                 _nullLut ? lutbalance::checkedGenerator<makeNullLuts, lutbalance::Policy::Absolute>(frames, storage)
                 : _smoothGray && _scrubLutFrames
-                    ? lutbalance::checkedGenerator<makeDuRedriveLuts, lutbalance::Policy::Absolute>(frames, storage)
+                    ? checkedRedrive(frames, storage)
                 : _complementOldPlane
                     ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
                     : lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Transition>(frames, storage));
@@ -1322,5 +1352,21 @@ PanelDriver& uc8179Driver() {
   static Uc8179Driver instance(uc8179ActiveConfig());
   return instance;
 }
+
+#if FREEINK_TUNING
+// Frame counts feed only the gated generators (balanced for every count);
+// out-of-range values fall back to the defaults.
+void setUc8179Tuning(const Uc8179Tuning& t) {
+  kPaintFrames = t.paintFrames >= 6 && t.paintFrames <= 24 ? t.paintFrames : 12;
+  kColdDivisor = t.coldDivisor <= 10 ? t.coldDivisor : 3;
+  kHeldRedriveFrames = t.heldRedriveFrames <= kHeldRedriveMax ? t.heldRedriveFrames : 3;
+#if FREEINK_UC8179_PANEL_TEMP
+  PANEL_COLD_C = t.coldC >= -10 && t.coldC <= 40 ? t.coldC : 15;
+  PANEL_TEMP_PERIOD_MS = t.tempPeriodMs >= 10000 ? t.tempPeriodMs : 60000;
+  PANEL_TEMP_REFRESH_PERIOD_MS = t.tempRefreshPeriodMs >= 10000 ? t.tempRefreshPeriodMs : 300000;
+  PANEL_TEMP_MAX_AGE_MS = t.tempMaxAgeMs >= 10000 ? t.tempMaxAgeMs : 600000;
+#endif
+}
+#endif
 
 }  // namespace freeink

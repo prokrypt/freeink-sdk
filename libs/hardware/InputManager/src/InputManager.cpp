@@ -611,6 +611,24 @@ const char* InputManager::getButtonName(const uint8_t buttonIndex) {
 
 bool InputManager::s_sharedConfirmPowerShortPressEmitsPower = false;
 
+#if FREEINK_TUNING
+void InputManager::setTuning(const Tuning& t) {
+  HOME_KEY_LONG_PRESS_MS = t.homeKeyLongPressMs;
+  CONFIRM_BACK_HOLD_MS = t.confirmBackHoldMs;
+  CONFIRM_POWER_HOLD_MS = t.confirmPowerHoldMs;
+  TWO_BUTTON_HOLD_MS = t.twoButtonHoldMs;
+  TOUCH_IRQ_PULSE_MS = t.touchIrqPulseMs;
+  TOUCH_SWIPE_MIN_PX = t.touchSwipeMinPx > 8 ? t.touchSwipeMinPx : 60;
+  // A tap must stay a tap until it could be a swipe.
+  TOUCH_TAP_SLOP_PX = t.touchTapSlopPx > 0 && t.touchTapSlopPx < TOUCH_SWIPE_MIN_PX ? t.touchTapSlopPx : 28;
+  TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  TOUCH_SWIPE_MAX_MS = t.touchSwipeMaxMs;
+  TOUCH_MULTI_SWIPE_MAX_MS = t.touchMultiSwipeMaxMs;
+  TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = t.touchMultiSeparationSlopPx;
+  TOUCH_LONG_PRESS_MS = t.touchLongPressMs;
+}
+#endif
+
 bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 
 // ============================================================================
