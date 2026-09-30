@@ -278,6 +278,12 @@ public:
         styles.selected.foreground = Paint::solid(Color::Black);
         styles.active = styles.selected;
         break;
+      case SelectionStyle::Outline:
+        styles.selected = styles.normal;
+        styles.selected.border = Paint::solid(Color::Black);
+        styles.selected.borderWidth = 2;
+        styles.active = styles.selected;
+        break;
       case SelectionStyle::Underline:
       case SelectionStyle::Triangle:
         styles.selected = styles.normal; // the marker shows the selection
