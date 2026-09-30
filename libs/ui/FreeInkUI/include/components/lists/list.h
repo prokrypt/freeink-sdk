@@ -183,6 +183,9 @@ struct ListProps {
   // Explicit vertical content padding. -1 preserves legacy row-height-derived
   // padding; non-negative values make rowHeight a minimum, growing to content.
   int16_t rowPaddingY = -1;
+  // Draw no row as selected while keeping selectedIndex for scrolling/nav
+  // (touch screens that only show a selection after a button press).
+  bool hideSelection = false;
 };
 
 // Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
@@ -700,7 +703,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     }
     State state = partial ? static_cast<State>(item.state & ~(StateSelected | StateFocused | StateActive))
                           : item.state;
-    if (!partial && props.selectedIndex == static_cast<int16_t>(i))
+    if (!partial && !props.hideSelection && props.selectedIndex == static_cast<int16_t>(i))
       state |= StateSelected;
     if (!item.enabled)
       state |= StateDisabled;
@@ -880,7 +883,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                           labelStyle);
     }
 
-    if (!partial && props.selectedIndex == static_cast<int16_t>(i) &&
+    if (!partial && !props.hideSelection && props.selectedIndex == static_cast<int16_t>(i) &&
         props.selectionMarker != SelectionMarker::None) {
       if (props.selectionMarker == SelectionMarker::Underline) {
         // RTL mirrors which edge carries markerInset's extra gap, matching
