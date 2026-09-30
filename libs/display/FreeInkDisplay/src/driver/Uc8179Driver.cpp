@@ -610,9 +610,17 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   const bool fast = ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames;
 
   if (paintDestination) {
+    // The panel holds direct gray, so no OLD plane is true: drive every pixel to
+    // its B/W target with the complement pair on the balanced DU LUT (every row
+    // nets zero), not OTP Fast, whose one-way K->W/W->K rows can't be checked.
+    // ponytail: 6 frames per phase is a guess; raise it if gray shows through.
     streamPlane(bus, CMD_DTM1, fb, true);
     streamPlane(bus, CMD_DTM2, fb);
+    _scrubLutFrames = 6;
+    _complementOldPlane = true;
     startBwRefresh(bus, true);
+    _scrubLutFrames = 0;
+    _complementOldPlane = false;
     bus.waitRefreshComplete(" 8179_BW_TARGET_DRF");
     bus.cmd(CMD_PARTIAL_OUT);
   }
