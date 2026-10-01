@@ -502,6 +502,9 @@ class InputManager {
   INPUT_TUNABLE int TOUCH_TAP_SLOP_PX = 28;
   INPUT_TUNABLE int TOUCH_SWIPE_MIN_PX = 60;
   INPUT_TUNABLE int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  // Primary-contact jump in one controller frame (panel px) that means a different
+  // finger, not motion: a fast flick moves well under this per frame.
+  static constexpr int TOUCH_CONTACT_JUMP_PX = 120;
   INPUT_TUNABLE unsigned long TOUCH_SWIPE_MAX_MS = 700;
   INPUT_TUNABLE unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
   INPUT_TUNABLE int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;

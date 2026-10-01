@@ -2339,6 +2339,27 @@ void InputManager::pollGt911(const unsigned long now) {
       // the active sequence through transient I2C failures.
       updateMultiTouchGesture(touchSnapshot, now);
 
+      // Overlapping taps (two thumbs): the first finger lifts while the next is
+      // down, and the primary record jumps to the new finger with no zero-contact
+      // frame between. Without track ids that read as one contact moving key to
+      // key, i.e. a swipe (log 20261001T050734Z-32cc8fdd #349/#421: swipe right
+      // from one key to the next). A jump no finger makes in one frame ends the
+      // old contact here (tap or release); the next frame starts a new one.
+      // ponytail: assumes the GT911 keeps reporting while the new finger is down.
+      if (touchPressed) {
+        const TouchPoint& next = touchSnapshot.points[0].point;
+        const int jx = static_cast<int>(next.x) - static_cast<int>(touchPoint.x);
+        const int jy = static_cast<int>(next.y) - static_cast<int>(touchPoint.y);
+        if (absInt(jx) > TOUCH_CONTACT_JUMP_PX || absInt(jy) > TOUCH_CONTACT_JUMP_PX) {
+          touchReleasedEvent = true;
+          lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+          touchUpPoint = touchPoint;
+          touchPressed = false;
+          gt911ClearStatus();
+          return;
+        }
+      }
+
       // Preserve the existing single-touch API from the first contact.
       touchPoint = touchSnapshot.points[0].point;
       if (!touchPressed) {
