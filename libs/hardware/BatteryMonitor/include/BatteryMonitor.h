@@ -51,6 +51,10 @@ public:
     // unchanged, so a caller can keep its last good value. The ADC path always
     // succeeds.
     bool readPercentageChecked(uint16_t& out) const;
+    // Same read in 1/256 % (out = percent * 256 + fraction). Only the CW2017
+    // reports a fraction (its SOC register's low byte); other backends return
+    // whole percents * 256.
+    bool readPercentage256Checked(uint16_t& out) const;
 
     // Read every battery field the active board can report. `supported` is false
     // when the board profile has no battery telemetry path. Per-field `Known`
