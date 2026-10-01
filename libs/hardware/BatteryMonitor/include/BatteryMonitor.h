@@ -55,6 +55,10 @@ public:
     // reports a fraction (its SOC register's low byte); other backends return
     // whole percents * 256.
     bool readPercentage256Checked(uint16_t& out) const;
+    // Debug: raw 8-bit register access on the I2C gauge. false without one or
+    // on I2C failure.
+    bool readGaugeReg(uint8_t reg, uint8_t& out) const;
+    bool writeGaugeReg(uint8_t reg, uint8_t value) const;
 
     // Read every battery field the active board can report. `supported` is false
     // when the board profile has no battery telemetry path. Per-field `Known`
