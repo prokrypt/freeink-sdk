@@ -42,6 +42,7 @@
 #include <new>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <utility>
@@ -276,7 +277,10 @@ class SecureHttpClient {
       _reportProgress = !discardBody && static_cast<bool>(_progress);
 
       bool reusableFraming = true;
-      if (transferEncoding.find("chunked") != std::string::npos) {
+      if (strcmp(method, "HEAD") == 0) {
+        // No body follows a HEAD response; Content-Length describes the GET.
+        _bodyComplete = true;
+      } else if (transferEncoding.find("chunked") != std::string::npos) {
         _bodyComplete = readChunked(*_conn, bodySink, shouldAbort);
       } else if (transferEncoding.empty() || transferEncoding == "identity") {
         if (_haveContentLength) {
