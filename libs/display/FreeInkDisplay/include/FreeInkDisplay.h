@@ -556,6 +556,11 @@ uint32_t uc8179FlashSwingDoneMs();
 // drawer over gray, scrubs, re-drives; same LUT and length either way).
 enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint };
 Uc8179FlashKind uc8179FlashKind();
+// millis() when the refresh now starting was planned to swing (0: none
+// planned, or DRF has resolved it into uc8179FlashSwingMs), and its kind. Set
+// before the refresh's power and SPI work, so a frontlight duck can start early.
+uint32_t uc8179FlashPlannedMs();
+Uc8179FlashKind uc8179FlashPlannedKind();
 // The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
 // 2 x `frames` frames (null discharge; pixels do not move). Balanced by
 // construction. One shot; other controllers ignore it.

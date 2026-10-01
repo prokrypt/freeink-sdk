@@ -221,6 +221,10 @@ std::atomic<uint32_t> gSwingMs{0};
 std::atomic<uint32_t> gSwingEndMs{0};
 std::atomic<uint32_t> gSwingDoneMs{0};  // expected BUSY release (measured run)
 std::atomic<Uc8179FlashKind> gSwingKind{Uc8179FlashKind::Full};
+// Planned swing (uc8179FlashPlannedMs): set when a refresh is planned, before
+// its POF/PON/SPI, from the same decision DRF uses; DRF resolves it.
+std::atomic<uint32_t> gPlanMs{0};
+std::atomic<Uc8179FlashKind> gPlanKind{Uc8179FlashKind::Full};
 // Frame time per waveform kind, re-measured at the end of every run of it: the
 // OTP GC (one "frame" = the whole refresh), register DU and direct gray run at
 // different rates. Defaults from logs/device/20260930T192900Z-c2123894-psram.txt
@@ -282,11 +286,21 @@ uint32_t uc8179FlashSwingDoneMs() { return gSwingDoneMs.load(std::memory_order_r
 
 Uc8179FlashKind uc8179FlashKind() { return gSwingKind.load(std::memory_order_relaxed); }
 
+uint32_t uc8179FlashPlannedMs() { return gPlanMs.load(std::memory_order_relaxed); }
+
+Uc8179FlashKind uc8179FlashPlannedKind() { return gPlanKind.load(std::memory_order_relaxed); }
+
 namespace {
+void planFlash(const bool flashes, const Uc8179FlashKind kind) {
+  if (flashes) gPlanKind.store(kind, std::memory_order_relaxed);
+  gPlanMs.store(flashes ? millis() | 1 : 0, std::memory_order_relaxed);
+}
+
 // Right before DRF. The swing starts swingFrame frames in (< 0: the background
 // holds, no swing); frameUs/totalFrames are re-measured when BUSY releases.
 void swingStart(const int swingFrame, uint32_t* const frameUs, const uint16_t totalFrames, const bool measure,
                 const Uc8179FlashKind kind) {
+  gPlanMs.store(0, std::memory_order_relaxed);  // the plan is now the real swing (or none)
   gSwingFrameUs = measure ? frameUs : nullptr;
   gSwingFrames = totalFrames;
   if (swingFrame < 0 || frameUs == nullptr) return;
@@ -752,19 +766,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // After the balanced DU paint the panel shows the B/W target, so a Fast
   // request is done: no OTP Full flash on top (menus, Home, the next page's base).
   const bool paintIsRefresh = paintDestination && mode == RefreshMode::Fast && !halfScrubFrames;
-  restoreBwConfiguration(bus);
-  _absoluteInput = false;
-  _directGrayPass = false;
-  _directGrayPlanes = 0;
-  (void)prev;
-  _bwPlanesSynced = false;
-  _absoluteGrayPlanes = false;
-  _grayBaseValid = false;
-  // Stock derives its B/W base from absolute gray planes (plane0 & plane1).
-  // CrossPoint instead displays that B/W base first and then reuses its single
-  // framebuffer for transition masks. Preserve the base before returning from
-  // this potentially asynchronous entry point so the masks can be converted to
-  // stock's absolute selector encoding later.
+  // Plan first: restoreBwConfiguration()'s POF is the slowest step here.
+  // Leaving direct gray, it clears the OLD plane.
+  const bool exitGray = _directGrayConfigured;
   // Selective exit paint: after an overlay-path gray page, _grayBase holds its
   // B/W base and _grayMask its gray pixels. Pure B/W pixels are at their base,
   // so they get their true OLD (hold or a real transition); only gray pixels
@@ -773,16 +777,6 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // makeDuRedriveLuts instead.
   const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
                               fb != nullptr;
-  if (selectivePaint) {
-    for (uint32_t i = 0; i < _bufferSize; i++) {
-      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~_grayMask[i]) | (~fb[i] & _grayMask[i]));
-    }
-  }
-  _panelGrayValid = false;
-  if (_grayBase != nullptr && fb != nullptr) {
-    memcpy(_grayBase, fb, _bufferSize);
-    _grayBaseValid = true;
-  }
   // Full and Half use the clearing OTP GC waveform; only an explicit Fast
   // request may use the differential DU partial (PTIN/PTOUT). Half keeps the
   // true previous frame in DTM1 so the OTP runs real transitions and holds. A
@@ -797,8 +791,52 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // just-displayed frame in displayFinish; a full refresh reseeds it to white.)
   // Half is the explicit GC clean.
   const bool scrub = (mode == RefreshMode::Half);
-  const bool fast =
-      ((mode == RefreshMode::Fast) && !scrub && !_needFullClear && _oldPlaneValid) || halfScrubFrames || nullFrames;
+  const bool fast = ((mode == RefreshMode::Fast) && !scrub && !exitGray && !_needFullClear && _oldPlaneValid) ||
+                    halfScrubFrames || nullFrames;
+  // A Half-as-scrub keeps the experiment's windows, PLL and resync skip out.
+  const bool expActive = gKbdExpOn && fast && !paintDestination && !halfScrubFrames && !nullFrames;
+  const bool expLut = expActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut);
+  const bool duScrub = (duScrubRequested && expLut) || halfScrubFrames;
+  // A smooth gray base over a B/W panel (the last gray pass was cancelled)
+  // takes the balanced DU LUT on the true OLD plane, like the paint, not OTP
+  // Fast, whose one-way rows can't be gated and leave new text gray under the
+  // held gray pass. Same time as a regular smooth turn's paint.
+  const bool smoothBase = _smoothGray && _paintForGrayBase && fast && !duScrub && !expActive;
+  const uint8_t scrubFrames = nullFrames ? nullFrames : smoothBase ? coldScaledFrames(kPaintFrames) : halfScrubFrames;
+  // Flash duck: plan the first DRF's swing with the decision startBwRefresh
+  // makes, before the POF/PON/SPI. ponytail: a Half over gray (paint, then GC)
+  // plans only the paint; its GC swing shows at DRF.
+  if (paintDestination) {
+    const bool paintExpLut = gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut);
+    planFlash(bwSwingFrame(true, paintExpLut, true, selectivePaint, false, coldScaledFrames(kPaintFrames)) >= 0,
+              Uc8179FlashKind::Paint);
+  } else {
+    planFlash(bwSwingFrame(fast, expLut, duScrub, false, nullFrames != 0, scrubFrames) >= 0,
+              fast ? Uc8179FlashKind::Paint : Uc8179FlashKind::Full);
+  }
+  restoreBwConfiguration(bus);
+  _absoluteInput = false;
+  _directGrayPass = false;
+  _directGrayPlanes = 0;
+  (void)prev;
+  _bwPlanesSynced = false;
+  _absoluteGrayPlanes = false;
+  _grayBaseValid = false;
+  // Stock derives its B/W base from absolute gray planes (plane0 & plane1).
+  // CrossPoint instead displays that B/W base first and then reuses its single
+  // framebuffer for transition masks. Preserve the base before returning from
+  // this potentially asynchronous entry point so the masks can be converted to
+  // stock's absolute selector encoding later.
+  if (selectivePaint) {
+    for (uint32_t i = 0; i < _bufferSize; i++) {
+      _grayMask[i] = static_cast<uint8_t>((_grayBase[i] & ~_grayMask[i]) | (~fb[i] & _grayMask[i]));
+    }
+  }
+  _panelGrayValid = false;
+  if (_grayBase != nullptr && fb != nullptr) {
+    memcpy(_grayBase, fb, _bufferSize);
+    _grayBaseValid = true;
+  }
 
   if (paintDestination) {
     // The panel holds direct gray, so no OLD plane is true: drive every pixel to
@@ -846,10 +884,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     }
   }
 
-  // A Half-as-scrub keeps the experiment's windows, PLL and resync skip out.
-  gExpActive = gKbdExpOn && fast && !paintDestination && !halfScrubFrames && !nullFrames;
-  const bool duScrub =
-      (duScrubRequested && gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut)) || halfScrubFrames;
+  gExpActive = expActive;
   if (duScrub) LOG_DBG("EPD", "8179_EXP: DU scrub refresh");
   // NEW plane (0x13) = new frame.
   streamPlane(bus, CMD_DTM2, fb);
@@ -859,12 +894,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   // (Ordinary Fast: OLD still holds the previous frame from displayFinish.)
 
-  // A smooth gray base over a B/W panel (the last gray pass was cancelled)
-  // takes the balanced DU LUT on the true OLD plane, like the paint, not OTP
-  // Fast, whose one-way rows can't be gated and leave new text gray under the
-  // held gray pass. Same time as a regular smooth turn's paint.
-  const bool smoothBase = _smoothGray && _paintForGrayBase && fast && !duScrub && !gExpActive;
-  _scrubLutFrames = nullFrames ? nullFrames : smoothBase ? coldScaledFrames(kPaintFrames) : halfScrubFrames;
+  _scrubLutFrames = scrubFrames;
   _complementOldPlane = duScrub;
   _nullLut = nullFrames != 0;
   if (_nullLut) LOG_DBG("EPD", "8179: null discharge, %u frames", 2u * nullFrames);
@@ -877,6 +907,22 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   _pendingRefresh = true;
   _bwBaseShown = true;  // fb in B/W once this refresh completes (gray passes wait for it)
   return true;
+}
+
+int Uc8179Driver::bwSwingFrame(const bool fast, const bool expLut, const bool complement, const bool selective,
+                               const bool nullLut, const uint8_t scrubFrames) const {
+  if (!fast) return 0;
+  if (!(expLut || scrubFrames) || nullLut || selective) return -1;  // OTP Fast, null, selective paint
+  if (complement) return 0;
+  const uint8_t frames = scrubFrames ? scrubFrames : (gKbdExp.lutFrames ? gKbdExp.lutFrames : 3);
+  if (_smoothGray && scrubFrames && !_paintForGrayBase) {
+    return 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));  // smooth re-drive
+  }
+  return -1;  // DU transitions
+}
+
+bool Uc8179Driver::grayPassHolds(const bool overlayPlanes) const {
+  return overlayPlanes && _bwBaseShown && _smoothGray;
 }
 
 void Uc8179Driver::logSpiBeforeDrf(const char* kind) {
@@ -952,14 +998,8 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // a menu or the drawer over gray in either mode (log
   // 20261001T021833Z-2c6751af L4101 Softfast turn, L2712/L3878 drawer and
   // Frontlight panel over Sharpflash gray).
-  const bool redrive =
-      kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase && !_selectivePaint;
-  int swingFrame = -1;
-  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint)) {
-    swingFrame = 0;
-  } else if (redrive) {
-    swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
-  }
+  const int swingFrame = bwSwingFrame(fast, gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut),
+                                     _complementOldPlane, _selectivePaint, _nullLut, _scrubLutFrames);
   swingStart(swingFrame, !fast ? &gGcFrameUs : kbdLut && !_nullLut ? &gDuFrameUs : nullptr,
              !fast ? 1 : 2 * frames, !gExpPll, !fast ? Uc8179FlashKind::Full : Uc8179FlashKind::Paint);
   gDrfStartMs = millis();
@@ -1174,6 +1214,13 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
 
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+  {
+    // Flash duck: plan the gray pass's swing as displayGray will decide it
+    // (overlay planes come out absolute iff the B/W base is valid).
+    const bool planes = !_absoluteInput && _grayBaseValid;
+    const bool skipped = !_directGrayPass && !_absoluteInput && !planes;
+    planFlash(!skipped && !grayPassHolds(!_directGrayPass && planes), Uc8179FlashKind::Gray);
+  }
   _oldPlaneStale = false;  // every branch below overwrites DTM1
   if (_absoluteInput) {
     bus.waitBusy(" absolute plane");
@@ -1255,13 +1302,13 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // its result kept the old page as ghosts in the image's white/black areas
   // and left first-page text gray (log 20260930T082014Z-2557c0fd L4067-4077).
   const bool overlayPlanes = !_directGrayPass && _absoluteGrayPlanes;
-  const bool holdBw = overlayPlanes && _bwBaseShown;
   if (!_directGrayPass) {
     bus.waitBusy(" 8179_gray_ready");
     if (!_absoluteGrayPlanes && !_absoluteInput) {
       // Raw overlay masks (no base snapshot) are not absolute selectors: keep
       // the B/W base on screen and resync from scratch.
       LOG_DBG("EPD", "8179: gray pass skipped, no absolute planes");
+      planFlash(false, Uc8179FlashKind::Gray);
       _absoluteInput = false;
       _needFullClear = true;
       _oldPlaneValid = false;
@@ -1276,7 +1323,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       _isScreenOn = true;
     }
     configureDirectGrayscale(bus);
-    _holdBwPass = holdBw && _smoothGray;
+    _holdBwPass = grayPassHolds(overlayPlanes);
     if (_holdBwPass) {
       writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
