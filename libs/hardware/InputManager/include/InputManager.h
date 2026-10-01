@@ -39,6 +39,7 @@ class InputManager {
     unsigned long touchMultiSwipeMaxMs = 2000;
     int touchMultiSeparationSlopPx = 45;
     unsigned long touchLongPressMs = 500;
+    int touchContactJumpPx = 120;
   };
   // Main task. Swipe min > 8 px and tap slop below it, else defaults; tap-on-release
   // slop stays swipe min - 1. Other values are the caller's (app knob ranges).
@@ -504,7 +505,7 @@ class InputManager {
   INPUT_TUNABLE int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
   // Primary-contact jump in one controller frame (panel px) that means a different
   // finger, not motion: a fast flick moves well under this per frame.
-  static constexpr int TOUCH_CONTACT_JUMP_PX = 120;
+  INPUT_TUNABLE int TOUCH_CONTACT_JUMP_PX = 120;
   INPUT_TUNABLE unsigned long TOUCH_SWIPE_MAX_MS = 700;
   INPUT_TUNABLE unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
   INPUT_TUNABLE int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;

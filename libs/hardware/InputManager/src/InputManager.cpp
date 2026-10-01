@@ -626,6 +626,7 @@ void InputManager::setTuning(const Tuning& t) {
   TOUCH_MULTI_SWIPE_MAX_MS = t.touchMultiSwipeMaxMs;
   TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = t.touchMultiSeparationSlopPx;
   TOUCH_LONG_PRESS_MS = t.touchLongPressMs;
+  TOUCH_CONTACT_JUMP_PX = t.touchContactJumpPx;
 }
 #endif
 
@@ -2345,8 +2346,10 @@ void InputManager::pollGt911(const unsigned long now) {
       // key, i.e. a swipe (log 20261001T050734Z-32cc8fdd #349/#421: swipe right
       // from one key to the next). A jump no finger makes in one frame ends the
       // old contact here (tap or release); the next frame starts a new one.
+      // Only a still contact (a tap) can jump: a moving swipe is never split, even
+      // if a slow poll makes it cover more than the jump in one read.
       // ponytail: assumes the GT911 keeps reporting while the new finger is down.
-      if (touchPressed) {
+      if (touchPressed && !touchMovedBeyondTapSlop) {
         const TouchPoint& next = touchSnapshot.points[0].point;
         const int jx = static_cast<int>(next.x) - static_cast<int>(touchPoint.x);
         const int jy = static_cast<int>(next.y) - static_cast<int>(touchPoint.y);
