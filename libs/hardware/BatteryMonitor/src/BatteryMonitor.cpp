@@ -92,7 +92,7 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 // must verify/upload one before SoC reads mean anything.
 constexpr uint8_t CW2017_REG_VERSION = 0x00;    // 0xA0 while starting; running versions match 0x0D/0x0F
 constexpr uint8_t CW2017_REG_VCELL_H = 0x02;    // 14-bit VCELL, big-endian over 0x02/0x03
-constexpr uint8_t CW2017_REG_SOC = 0x04;        // integer percent (0x05 = fraction, unused)
+constexpr uint8_t CW2017_REG_SOC = 0x04;        // integer percent; 0x05 = fraction in 1/256 %
 constexpr uint8_t CW2017_REG_TEMP = 0x06;       // 0.5 C per LSB, -40 C offset (TS/NTC input)
 constexpr uint8_t CW2017_REG_MODE = 0x08;       // soft-reset / sleep control
 constexpr uint8_t CW2017_REG_SOC_ALERT = 0x0B;  // bit7 = profile-loaded / update-enable
@@ -212,7 +212,10 @@ bool cw2017EnsureProfile(const uint8_t addr) {
 }
 
 // SoC (0..100) from the active gauge, dispatched by type. false on I2C failure.
-bool readGaugeSoc(uint16_t& out) {
+// frac (optional): the CW2017's 1/256 % fraction, read in the same burst as the
+// integer so the two match; 0 on other gauges.
+bool readGaugeSoc(uint16_t& out, uint8_t* frac = nullptr) {
+  if (frac) *frac = 0;
   const auto& g = BoardConfig::ACTIVE.batteryGauge;
 #if FREEINK_DEVICE_WS397
   if (g.gaugeType == BoardConfig::GaugeType::Axp2101) {
@@ -238,15 +241,16 @@ bool readGaugeSoc(uint16_t& out) {
     // source. Clearing initialized makes the next call run the bounded recovery.
     uint8_t mode = 0;
     uint8_t version = 0;
-    uint8_t soc = 0;
+    uint16_t socLe = 0;  // readReg16 is little-endian: low byte = 0x04 (integer), high = 0x05
     if (!readReg8(g.gaugeAddr, CW2017_REG_MODE, mode) || mode != CW2017_MODE_NORMAL ||
         !readReg8(g.gaugeAddr, CW2017_REG_VERSION, version) || !cw2017VersionIsRunning(version) ||
-        !readReg8(g.gaugeAddr, CW2017_REG_SOC, soc) || soc > 100) {
+        !readReg16(g.gaugeAddr, CW2017_REG_SOC, socLe) || (socLe & 0xFF) > 100) {
       initialized = false;
       return false;
     }
 
-    out = soc;
+    out = socLe & 0xFF;
+    if (frac) *frac = out < 100 ? static_cast<uint8_t>(socLe >> 8) : 0;
     return true;
   }
   uint16_t soc = 0;
@@ -433,22 +437,30 @@ uint16_t BatteryMonitor::readPercentage() const {
 }
 
 bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
+  uint16_t fine = 0;
+  if (!readPercentage256Checked(fine)) return false;
+  out = fine >> 8;
+  return true;
+}
+
+bool BatteryMonitor::readPercentage256Checked(uint16_t& out) const {
 #if FREEINK_BATTERY_I2C_GAUGE
   if (BoardConfig::ACTIVE.batteryGauge.gaugeAddr != 0) {
     uint16_t soc = 0;
-    if (!readGaugeSoc(soc)) return false;
-    out = soc;
+    uint8_t frac = 0;
+    if (!readGaugeSoc(soc, &frac)) return false;
+    out = static_cast<uint16_t>(soc * 256 + frac);
     return true;
   }
 #endif
   if (hasM5Pm1Backend()) {
     Status status;
     if (!readM5Pm1Status(status) || !status.percentageKnown) return false;
-    out = status.percentage;
+    out = static_cast<uint16_t>(status.percentage * 256);
     return true;
   }
   if (!hasAdcBackend()) return false;
-  out = percentageFromMillivolts(readMillivolts());
+  out = static_cast<uint16_t>(percentageFromMillivolts(readMillivolts()) * 256);
   return true;
 }
 
