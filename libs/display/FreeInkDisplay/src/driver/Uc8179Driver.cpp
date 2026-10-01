@@ -603,8 +603,8 @@ void Uc8179Driver::readOtpVcom(EpdBus& bus) {
 }
 
 // OTP VCOM for the panel's last measured temperature (25 C before a sample),
-// the gray packet's when the OTP was unreadable.
-uint8_t Uc8179Driver::vcomDc() {
+// or for `forcedC` (a TSSET temperature), the gray packet's when the OTP was unreadable.
+uint8_t Uc8179Driver::vcomDc(const int forcedC) {
   if (_otpTrs == 0) {
     if (_vcomTrLogged != 0xFE) LOG_INF("EPD", "8179 VCOM %02X (gray packet, no OTP)", kUc8179DirectGrayConfig[5]);
     _vcomTrLogged = 0xFE;
@@ -614,6 +614,7 @@ uint8_t Uc8179Driver::vcomDc() {
 #if FREEINK_UC8179_PANEL_TEMP
   if (gPanelTempValid && millis() - gPanelTempMs <= PANEL_TEMP_MAX_AGE_MS) celsius = gPanelTempC;
 #endif
+  if (forcedC != INT_MIN) celsius = forcedC;
   unsigned tr = 0;
   while (tr + 1 < _otpTrs && celsius > static_cast<int8_t>(_otpTb[tr])) ++tr;
   if (tr != _vcomTrLogged) LOG_INF("EPD", "8179 VCOM %02X (TR%u, %d C)", _otpVcom[tr], tr, celsius);
@@ -957,7 +958,12 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     lutbalance::LutSet storage;
     // Smooth gray paints and bases re-drive held blacks (KK); a full DU
     // scrub complements every pixel, so those rows are unused there.
-    writeRegisterLutPower(bus, vcomDc());
+    // Turbo keyboard DU replaces OTP Fast, so it takes OTP Fast's VCOM: the TR
+    // its forced TSSET picks (90 C: TR5 -1.40 V on .67, live 25 C is TR4 -1.80 V).
+    // Held pixels sit at GND under VCOM for the whole refresh; the 0.4 V gap
+    // grayed the white background while typing (user pick 1, 05:39 10/1).
+    const bool turboKbd = !_scrubLutFrames && !_nullLut;
+    writeRegisterLutPower(bus, turboKbd ? vcomDc(_cfg.tssetFast) : vcomDc());
     writeLutSet(bus,
                 _nullLut ? lutbalance::checkedGenerator<makeNullLuts, lutbalance::Policy::Absolute>(frames, storage)
                 : _smoothGray && _scrubLutFrames

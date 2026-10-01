@@ -16,6 +16,7 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag). Production waits one RTOS tick
 // and then polls until BUSY_N is HIGH; it does not require observing a LOW edge.
 
+#include <climits>
 #include <BoardConfig.h>  // FREEINK_UC8179_PANEL_TEMP
 
 #include "PanelDriver.h"
@@ -137,7 +138,7 @@ class Uc8179Driver : public PanelDriver {
   void readOtpVcom(EpdBus& bus);
   bool loadOtpVcomCache(const uint8_t* tb);
   void saveOtpVcomCache() const;
-  uint8_t vcomDc();
+  uint8_t vcomDc(int forcedC = INT_MIN);
   bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
