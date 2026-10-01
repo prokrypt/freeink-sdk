@@ -944,17 +944,18 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   gKbdTiming.drfRows = static_cast<uint16_t>(_h);
   logSpiBeforeDrf(fast ? "fast" : "full");
   // Flash duck: the OTP GC (Full/Half) swings from its first frame; a DU with
-  // a complement OLD plane drives white pixels black first (a selective paint,
-  // e.g. the drawer over gray, only its gray pixels); the smooth re-drive swings held
-  // whites for its last 2n frames, except under a Softfast page's gray base
-  // (kk3: that turn shows no flash). OTP Fast, DU transitions and null hold.
-  // A Softfast (smooth gray) selective exit paint is the turn between two
-  // gray pages, which kk3 keeps flash-free (log 20261001T021450Z-2c6751af
-  // L4101): no swing there, the drawer over Softfast gray included.
-  const bool softTurn = _smoothGray && _selectivePaint;
-  const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase && !softTurn;
+  // a complement OLD plane drives white pixels black first; the smooth re-drive
+  // swings held whites for its last 2n frames, except under a Softfast page's
+  // gray base (kk3: that turn shows no flash). OTP Fast, DU transitions and
+  // null hold. A selective exit paint swings only the gray (AA edge) pixels,
+  // so the screen shows no flash: the Softfast turn between two gray pages and
+  // a menu or the drawer over gray in either mode (log
+  // 20261001T021833Z-2c6751af L4101 Softfast turn, L2712/L3878 drawer and
+  // Frontlight panel over Sharpflash gray).
+  const bool redrive =
+      kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase && !_selectivePaint;
   int swingFrame = -1;
-  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !softTurn)) {
+  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !_selectivePaint)) {
     swingFrame = 0;
   } else if (redrive) {
     swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
