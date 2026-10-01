@@ -109,8 +109,20 @@ constexpr lutbalance::LutSet makeDirectGrayHold() {
     s.row[lutbalance::Wk][g] = 0;
     s.row[lutbalance::Kk][g] = 0;
   }
+  // Light gray (KW) starts black in the base, so the stock row's 8 white then
+  // 12 black frames read as AA -> B/W before the final settle (user 18:15 10/1:
+  // "bw->aa->bw->aa"). Drop the white, keep 4 black (unseen on black) to balance
+  // the 4 white that make the gray; the 8 frames go to group 0's ground so the
+  // row stays 50 frames and the white pulses keep their frames.
+  uint8_t* kw = s.row[lutbalance::Kw];
+  kw[0] = 0;   // group 0 A: VDL 8 -> ground
+  kw[1] = 16;  // group 0 TP_A: 8 -> 16
+  kw[7] = 4;   // group 1 TP_A (VDH): 12 -> 4
   return s;
 }
+static_assert(kDirectGraySet.row[lutbalance::Kw][0] == 0x80 && kDirectGraySet.row[lutbalance::Kw][1] == 8 &&
+                  kDirectGraySet.row[lutbalance::Kw][6] == 0x62 && kDirectGraySet.row[lutbalance::Kw][7] == 12,
+              "makeDirectGrayHold edits the stock light-gray row by index");
 constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
 
 // Balanced DU register LUT: changing pixels get `frames` away from the target
