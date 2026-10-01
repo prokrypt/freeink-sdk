@@ -948,9 +948,13 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // e.g. the drawer over gray, only its gray pixels); the smooth re-drive swings held
   // whites for its last 2n frames, except under a Softfast page's gray base
   // (kk3: that turn shows no flash). OTP Fast, DU transitions and null hold.
-  const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase;
+  // A Softfast (smooth gray) selective exit paint is the turn between two
+  // gray pages, which kk3 keeps flash-free (log 20261001T021450Z-2c6751af
+  // L4101): no swing there, the drawer over Softfast gray included.
+  const bool softTurn = _smoothGray && _selectivePaint;
+  const bool redrive = kbdLut && _smoothGray && _scrubLutFrames && !_nullLut && !_paintForGrayBase && !softTurn;
   int swingFrame = -1;
-  if (!fast || (kbdLut && !_nullLut && _complementOldPlane)) {
+  if (!fast || (kbdLut && !_nullLut && _complementOldPlane && !softTurn)) {
     swingFrame = 0;
   } else if (redrive) {
     swingFrame = 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));
