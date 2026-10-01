@@ -110,6 +110,11 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
+  // Frame a B/W refresh's full-screen swing starts at (< 0: none). displayStart
+  // plans the flash with it before any panel work; startBwRefresh times DRF.
+  int bwSwingFrame(bool fast, bool expLut, bool complement, bool selective, bool nullLut, uint8_t scrubFrames) const;
+  // A gray pass holds black/white pixels (Softfast over its B/W base): no swing.
+  bool grayPassHolds(bool overlayPlanes) const;
   void configureDirectGrayscale(EpdBus& bus);
   void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
