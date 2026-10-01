@@ -436,6 +436,26 @@ uint16_t BatteryMonitor::readPercentage() const {
   return percentageFromMillivolts(readMillivolts());
 }
 
+bool BatteryMonitor::readGaugeReg(const uint8_t reg, uint8_t& out) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  return readReg8(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, reg, out);
+#else
+  (void)reg;
+  (void)out;
+  return false;
+#endif
+}
+
+bool BatteryMonitor::writeGaugeReg(const uint8_t reg, const uint8_t value) const {
+#if FREEINK_BATTERY_I2C_GAUGE
+  return writeReg8(BoardConfig::ACTIVE.batteryGauge.gaugeAddr, reg, value);
+#else
+  (void)reg;
+  (void)value;
+  return false;
+#endif
+}
+
 bool BatteryMonitor::readPercentageChecked(uint16_t& out) const {
   uint16_t fine = 0;
   if (!readPercentage256Checked(fine)) return false;
