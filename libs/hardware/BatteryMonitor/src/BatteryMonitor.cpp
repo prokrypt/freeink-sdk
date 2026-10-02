@@ -386,9 +386,9 @@ BatteryMonitor::BatteryMonitor()
 namespace {
 // Level meaning "charging" on the charge-status pin, per the active board's
 // polarity. Active-low /STAT lines are open-drain and need the internal
-// pull-up; an active-high STAT (X4 Pro GPIO21) is push-pull driven with no
-// pull — stock reads it bare, and a pull-up would fake "charging" if the
-// driver ever tri-states.
+// pull-up; an active-high STAT (X4 Pro GPIO21) is push-pull while the charger
+// is powered and floats with the cable out, so it gets a pull-down ("not
+// charging"). A bare INPUT here also cleared the pull-down set earlier.
 int chargeActiveLevel() {
   return BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? HIGH : LOW;
 }
@@ -397,7 +397,7 @@ int chargeActiveLevel() {
 BatteryMonitor::BatteryMonitor(int8_t adcPin, float dividerMultiplier, int8_t chargeStatusPin)
     : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier), _chargeStatusPin(chargeStatusPin) {
   if (_chargeStatusPin >= 0) {
-    pinMode(_chargeStatusPin, BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? INPUT : INPUT_PULLUP);
+    pinMode(_chargeStatusPin, BoardConfig::ACTIVE.batteryChargeStatusActiveHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   }
 }
 
