@@ -562,7 +562,8 @@ uint32_t uc8179FlashSwingDoneMs();
 // Which waveform that refresh runs, for per-kind flash duck timing: a direct
 // gray (AA) page, an OTP GC Half/Full, or a balanced DU paint (menus and the
 // drawer over gray, scrubs, re-drives; same LUT and length either way).
-enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint };
+// GrayDark: a Night Mode Sharpflash page (stock set: background swings white from frame 0).
+enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint, GrayDark };
 Uc8179FlashKind uc8179FlashKind();
 // millis() when the refresh now starting was planned to swing (0: none
 // planned, or DRF has resolved it into uc8179FlashSwingMs), and its kind. Set

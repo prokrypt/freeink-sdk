@@ -83,7 +83,7 @@ class Uc8179Driver : public PanelDriver {
   bool grayOnPanel() const override { return _directGrayOnPanel; }
   void setSmoothGray(bool smooth) override { _smoothGray = smooth; }
   // Dark mode: overlay gray folds its planes in panel polarity and runs the
-  // mirrored sets (hold, full, held re-drive).
+  // mirrored hold and held re-drive sets (Sharp keeps the stock set).
   void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
   bool supportsInvertedOverlayGray() const override { return true; }
 

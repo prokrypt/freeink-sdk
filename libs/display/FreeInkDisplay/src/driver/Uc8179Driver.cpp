@@ -149,11 +149,11 @@ constexpr lutbalance::LutSet mirror(const lutbalance::LutSet& in) {
   }
   return s;
 }
-// Dark Sharp: same swing size as light Sharp (the black background runs the
-// mirrored white row), so the flash duck keeps its timing. Fallback if its grays
-// look wrong (user 20:03 10/2): kDirectGraySet, vendor-calibrated grays but a
-// 21-frame white swing on the black background.
-constexpr lutbalance::LutSet kDirectGrayDarkSet = mirror(kDirectGraySet);
+// Dark Sharp runs the stock kDirectGraySet, not its mirror: the vendor rows are
+// asymmetric (black W21 then K21, white K12 then W12), so the mirror gave the
+// black background only 12 frames back to black and the old page's white text
+// ghosted (user 21:13 10/2). Stock gives it 21 (and vendor-calibrated grays),
+// at the cost of a 21-frame white swing on the background from the first frame.
 // Dark Smooth: black background and white text hold; only the low-coverage AA
 // pixels (WK in dark) go from white toward dark gray, the light-mode negative.
 constexpr lutbalance::LutSet kDirectGrayHoldDarkSet = mirror(kDirectGrayHoldSet);
@@ -1289,7 +1289,8 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     // (overlay planes come out absolute iff the B/W base is valid).
     const bool planes = !_absoluteInput && _grayBaseValid;
     const bool skipped = !_directGrayPass && !_absoluteInput && !planes;
-    planFlash(!skipped && !grayPassHolds(!_directGrayPass && planes), Uc8179FlashKind::Gray);
+    planFlash(!skipped && !grayPassHolds(!_directGrayPass && planes),
+              _darkBackground ? Uc8179FlashKind::GrayDark : Uc8179FlashKind::Gray);
   }
   _oldPlaneStale = false;  // every branch below overwrites DTM1
   if (_absoluteInput) {
@@ -1401,16 +1402,14 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     configureDirectGrayscale(bus);
     _holdBwPass = grayPassHolds(overlayPlanes);
     // Overlay planes only come here while inverted (FreeInkDisplay gates the
-    // rest), so the dark flag picks the mirrored sets for overlay pages only.
+    // rest), so the dark flag picks the mirrored hold set for overlay pages only.
     if (_holdBwPass) {
       writeLutSet(bus, _darkBackground
                            ? lutbalance::checkedTable<kDirectGrayHoldDarkSet, lutbalance::Policy::Absolute>()
                            : lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
       LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold%s", _darkBackground ? " (dark)" : "");
     } else {
-      writeLutSet(bus, _darkBackground
-                           ? lutbalance::checkedTable<kDirectGrayDarkSet, lutbalance::Policy::Absolute>()
-                           : lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
+      writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
     }
     _directGrayPass = true;
     _directGrayPlanes = 3;
@@ -1423,9 +1422,10 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _isScreenOn = true;
   }
   logSpiBeforeDrf("direct_gray");
-  // The hold set (smooth gray) keeps black/white pixels: no swing.
-  swingStart(_holdBwPass ? -1 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true,
-             Uc8179FlashKind::Gray);
+  // The hold set (smooth gray) keeps black/white pixels: no swing. Dark
+  // backgrounds run the stock black row, which drives from frame 0.
+  swingStart(_holdBwPass ? -1 : _darkBackground ? 0 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true,
+             _darkBackground ? Uc8179FlashKind::GrayDark : Uc8179FlashKind::Gray);
   const unsigned long grayDrfMs = millis();
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
