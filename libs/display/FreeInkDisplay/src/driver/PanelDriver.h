@@ -236,6 +236,11 @@ class PanelDriver {
   // non-flashing. Drivers may use this to widen their drive set (re-blacken
   // the unchanged background each update) or bias their deghost direction.
   virtual void setBackgroundHint(bool darkBackground) { (void)darkBackground; }
+  // True when overlay gray (copyGrayscale* + displayGray) works on inverted
+  // frames: the base arrives inverted and the driver folds the masks in panel
+  // polarity (see setBackgroundHint). Absolute/Direct planes stay unsupported
+  // while inverted.
+  virtual bool supportsInvertedOverlayGray() const { return false; }
   // Capture the cancellation generation at the start of a logical UI render.
   // This must happen before CPU-side composition: input arriving while an old
   // frame is being composed must still cancel its optional post-refresh work.

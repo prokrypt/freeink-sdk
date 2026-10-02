@@ -125,6 +125,43 @@ static_assert(kDirectGraySet.row[lutbalance::Kw][0] == 0x80 && kDirectGraySet.ro
               "makeDirectGrayHold edits the stock light-gray row by index");
 constexpr lutbalance::LutSet kDirectGrayHoldSet = makeDirectGrayHold();
 
+// Dark mode (setBackgroundHint): the panel shows the inverted page, so each
+// pixel's level is the NOT of both absolute planes and its rows are the light
+// ones with black and white swapped: WW<->KK, KW<->WK, VDH<->VDL (VCOM too).
+// Every gated row nets 0 on its own (Absolute), so its mirror does as well; the
+// mirrored sets still go through checkedTable/checkedGenerator below.
+// Inferred: mirrored gray levels are not vendor-calibrated (bench on device).
+constexpr uint8_t mirrorLevels(const uint8_t levels) {
+  uint8_t out = 0;
+  for (uint8_t shift = 0; shift < 8; shift += 2) {
+    const uint8_t l = static_cast<uint8_t>((levels >> shift) & 3);
+    out |= static_cast<uint8_t>((l == 1 ? 2 : l == 2 ? 1 : l) << shift);
+  }
+  return out;
+}
+constexpr lutbalance::LutSet mirror(const lutbalance::LutSet& in) {
+  constexpr uint8_t from[lutbalance::kRows] = {lutbalance::Vcom, lutbalance::Kk, lutbalance::Wk, lutbalance::Kw,
+                                               lutbalance::Ww};
+  lutbalance::LutSet s{};
+  for (uint8_t r = 0; r < lutbalance::kRows; ++r) {
+    for (size_t i = 0; i < lutbalance::kRowBytes; ++i) s.row[r][i] = in.row[from[r]][i];
+    for (size_t g = 0; g < lutbalance::kRowBytes; g += lutbalance::kGroupBytes) s.row[r][g] = mirrorLevels(s.row[r][g]);
+  }
+  return s;
+}
+// Dark Sharp: same swing size as light Sharp (the black background runs the
+// mirrored white row), so the flash duck keeps its timing. Fallback if its grays
+// look wrong (user 20:03 10/2): kDirectGraySet, vendor-calibrated grays but a
+// 21-frame white swing on the black background.
+constexpr lutbalance::LutSet kDirectGrayDarkSet = mirror(kDirectGraySet);
+// Dark Smooth: black background and white text hold; only the low-coverage AA
+// pixels (WK in dark) go from white toward dark gray, the light-mode negative.
+constexpr lutbalance::LutSet kDirectGrayHoldDarkSet = mirror(kDirectGrayHoldSet);
+static_assert(kDirectGrayHoldDarkSet.row[lutbalance::Ww][0] == 0 && kDirectGrayHoldDarkSet.row[lutbalance::Kw][0] == 0 &&
+                  kDirectGrayHoldDarkSet.row[lutbalance::Kk][0] == 0 &&
+                  kDirectGrayHoldDarkSet.row[lutbalance::Wk][6] == 0x91,
+              "dark hold: background and text hold, only WK drives");
+
 // Balanced DU register LUT: changing pixels get `frames` away from the target
 // (invisible: they are already there), then `frames` to it, so every row nets
 // zero. VCOM, WW and KK hold: unchanged pixels are not driven. Row:
@@ -176,19 +213,33 @@ constexpr lutbalance::LutSet makeNullLuts(const uint8_t frames) {
   return s;
 }
 
+// Dark mode: KK is the whole black background, so the mirror re-drives held
+// whites (WW, the white text) instead.
+template <uint8_t N>
+constexpr lutbalance::LutSet makeDuRedriveDarkLuts(const uint8_t frames) {
+  return mirror(makeDuRedriveLuts<N>(frames));
+}
+static_assert(makeDuRedriveDarkLuts<3>(12).row[lutbalance::Ww][0] == 0x06 &&
+                  makeDuRedriveDarkLuts<3>(12).row[lutbalance::Kk][0] == 0,
+              "dark re-drive hits WW (white text), not KK (background)");
+
 using RedriveFn = lutbalance::CheckedLuts (*)(uint8_t, lutbalance::LutSet&);
-template <size_t... N>
+template <bool Dark, size_t... N>
 constexpr std::array<RedriveFn, sizeof...(N)> redriveTable(std::index_sequence<N...>) {
-  return {{&lutbalance::checkedGenerator<makeDuRedriveLuts<N>, lutbalance::Policy::Absolute>...}};
+  return {{&lutbalance::checkedGenerator<Dark ? makeDuRedriveDarkLuts<N> : makeDuRedriveLuts<N>,
+                                         lutbalance::Policy::Absolute>...}};
 }
 
-lutbalance::CheckedLuts checkedRedrive(const uint8_t frames, lutbalance::LutSet& storage) {
+lutbalance::CheckedLuts checkedRedrive(const uint8_t frames, lutbalance::LutSet& storage, const bool dark) {
 #if FREEINK_TUNING
-  static constexpr auto table = redriveTable(std::make_index_sequence<kHeldRedriveMax + 1>{});
-  return table[kHeldRedriveFrames](frames, storage);
+  static constexpr auto table = redriveTable<false>(std::make_index_sequence<kHeldRedriveMax + 1>{});
+  static constexpr auto darkTable = redriveTable<true>(std::make_index_sequence<kHeldRedriveMax + 1>{});
+  return (dark ? darkTable : table)[kHeldRedriveFrames](frames, storage);
 #else
-  return lutbalance::checkedGenerator<makeDuRedriveLuts<kHeldRedriveFrames>, lutbalance::Policy::Absolute>(frames,
-                                                                                                           storage);
+  return dark ? lutbalance::checkedGenerator<makeDuRedriveDarkLuts<kHeldRedriveFrames>, lutbalance::Policy::Absolute>(
+                    frames, storage)
+              : lutbalance::checkedGenerator<makeDuRedriveLuts<kHeldRedriveFrames>, lutbalance::Policy::Absolute>(
+                    frames, storage);
 #endif
 }
 
@@ -928,7 +979,8 @@ int Uc8179Driver::bwSwingFrame(const bool fast, const bool expLut, const bool co
   if (!(expLut || scrubFrames) || nullLut || selective) return -1;  // OTP Fast, null, selective paint
   if (complement) return 0;
   const uint8_t frames = scrubFrames ? scrubFrames : (gKbdExp.lutFrames ? gKbdExp.lutFrames : 3);
-  if (_smoothGray && scrubFrames && !_paintForGrayBase) {
+  // Dark: the mirrored re-drive moves only white text, the background holds.
+  if (_smoothGray && scrubFrames && !_paintForGrayBase && !_darkBackground) {
     return 2 * (frames - (frames < kHeldRedriveFrames ? frames : kHeldRedriveFrames));  // smooth re-drive
   }
   return -1;  // DU transitions
@@ -979,7 +1031,7 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
     writeLutSet(bus,
                 _nullLut ? lutbalance::checkedGenerator<makeNullLuts, lutbalance::Policy::Absolute>(frames, storage)
                 : _smoothGray && _scrubLutFrames
-                    ? checkedRedrive(frames, storage)
+                    ? checkedRedrive(frames, storage, _darkBackground)
                 : _complementOldPlane
                     ? lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Absolute>(frames, storage)
                     : lutbalance::checkedGenerator<makeDuLuts, lutbalance::Policy::Transition>(frames, storage));
@@ -1258,8 +1310,12 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
     // while its B/W base is 0 for every non-white pixel and 1 for white.
     // Folding the base into its LSB mask produces stock plane0:
     //   plane0 = base | maskLsb.
-    for (uint32_t i = 0; i < _bufferSize; i++) {
-      _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
+    // Dark mode: the base is in panel polarity (inverted) and every level is
+    // the NOT of light mode's, so plane0 = base & ~maskLsb (research check.py).
+    if (_darkBackground) {
+      for (uint32_t i = 0; i < _bufferSize; i++) _grayBase[i] = static_cast<uint8_t>(_grayBase[i] & ~lsb[i]);
+    } else {
+      for (uint32_t i = 0; i < _bufferSize; i++) _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
     }
     if (_grayMask != nullptr) memcpy(_grayMask, lsb, _bufferSize);  // copyGrayscaleMsb ORs in msb
     streamPlane(bus, CMD_DTM1, _grayBase);
@@ -1294,8 +1350,10 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
     // The stock gray_aa routine restores BOTH controller planes to its B/W base
     // after the gray activation. Recover that base now while plane0 and the MSB
     // mask are still available: base = plane0 & plane1.
+    // Dark: base = plane0 | plane1 = plane0 | maskMsb.
     for (uint32_t i = 0; i < _bufferSize; i++) {
-      _grayBase[i] = static_cast<uint8_t>(_grayBase[i] & (_grayBase[i] ^ msb[i]));
+      _grayBase[i] = static_cast<uint8_t>(_darkBackground ? _grayBase[i] | msb[i]
+                                                          : _grayBase[i] & (_grayBase[i] ^ msb[i]));
     }
     _grayBaseValid = true;
   } else {
@@ -1342,11 +1400,17 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     }
     configureDirectGrayscale(bus);
     _holdBwPass = grayPassHolds(overlayPlanes);
+    // Overlay planes only come here while inverted (FreeInkDisplay gates the
+    // rest), so the dark flag picks the mirrored sets for overlay pages only.
     if (_holdBwPass) {
-      writeLutSet(bus, lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
-      LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold");
+      writeLutSet(bus, _darkBackground
+                           ? lutbalance::checkedTable<kDirectGrayHoldDarkSet, lutbalance::Policy::Absolute>()
+                           : lutbalance::checkedTable<kDirectGrayHoldSet, lutbalance::Policy::Absolute>());
+      LOG_DBG("EPD", "8179: smooth gray, B/W pixels hold%s", _darkBackground ? " (dark)" : "");
     } else {
-      writeLutSet(bus, lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
+      writeLutSet(bus, _darkBackground
+                           ? lutbalance::checkedTable<kDirectGrayDarkSet, lutbalance::Policy::Absolute>()
+                           : lutbalance::checkedTable<kDirectGraySet, lutbalance::Policy::Absolute>());
     }
     _directGrayPass = true;
     _directGrayPlanes = 3;
