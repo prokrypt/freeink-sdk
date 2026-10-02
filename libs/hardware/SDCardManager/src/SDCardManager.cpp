@@ -392,10 +392,8 @@ bool SDCardManager::writeFile(const char* path, const String& content) {
     return false;
   }
 
-  if (vol().exists(path)) {
-    vol().remove(path);
-  }
-
+  // openFileForWrite truncates in place (O_TRUNC); removing first would also
+  // delete and recreate the directory entry on every save.
   FsFile f;
   if (!openFileForWrite("SD", path, f)) {
     LOG_ERR("SD", "Failed to open file for write: %s", path);
