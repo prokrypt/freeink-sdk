@@ -3,6 +3,7 @@
 #if FREEINK_SD_SDMMC
 
 #include <Arduino.h>
+#include <FreeInkLog.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -93,8 +94,8 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     if (sdPwr >= 0 && warmStart && attempt == 0) {
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
     } else if (sdPwr >= 0) {
-      if (warmStart && attempt == 1 && Serial)
-        Serial.printf("[%lu] [SD] SDMMC warm mount failed (%s), power-cycling\n", millis(), esp_err_to_name(mountErr));
+      if (warmStart && attempt == 1)
+        LOG_ERR("SD", "SDMMC warm mount failed (%s), power-cycling", esp_err_to_name(mountErr));
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
@@ -111,8 +112,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     if (e == ESP_OK) break;
   }
   if (mountErr != ESP_OK) {
-    if (Serial)
-      Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
+    LOG_ERR("SD", "SDMMC mount failed after retries: %s", esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);
     _dmaBuffer = nullptr;
     free(card);

@@ -10,6 +10,7 @@
 #include "BleKeyboardHost.h"
 
 #include <BoardConfig.h>  // FREEINK_CAP_BLE_HID_HOST
+#include <FreeInkLog.h>
 
 namespace freeink {
 
@@ -366,7 +367,7 @@ bool BleKeyboardHost::begin(const char* hostName) {
   Serial.printf("[BleHid] begin: loaded bonds=%u\n", bondCount_);
 #endif
   if (!NimBLEDevice::init(hostName ? hostName : "FreeInk")) {
-    Serial.println("[BleHid] begin: NimBLEDevice::init() failed");
+    LOG_ERR("BleHid", "begin: NimBLEDevice::init() failed");
     return false;
   }
 
@@ -418,7 +419,7 @@ bool BleKeyboardHost::begin(const char* hostName) {
     // NimBLE can refuse a new client if a previous one wasn't reclaimed (e.g. rapid
     // deinit/init cycles). Don't dereference null — unwind cleanly so a later begin()
     // can retry from a clean state.
-    Serial.println("[BleHid] begin: createClient() returned null");
+    LOG_ERR("BleHid", "begin: createClient() returned null");
     NimBLEDevice::deinit(true);
     return false;
   }

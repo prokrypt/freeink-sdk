@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <FreeInkLog.h>
 #include <InputManager.h>
 #include <SDCardManager.h>
 #include <esp_ota_ops.h>
@@ -96,11 +97,8 @@ void serialProgress(size_t written, size_t total, void*) {
   const size_t decile = total ? (written * 10) / total : 0;
   if (decile == lastDecile) return;
   lastDecile = decile;
-  if (Serial) {
-    Serial.printf("[%lu] [FLASH] %u%% (%u / %u bytes)\n", millis(),
-                  static_cast<unsigned>(decile * 10), static_cast<unsigned>(written),
-                  static_cast<unsigned>(total));
-  }
+  LOG_INF("FLASH", "%u%% (%u / %u bytes)", static_cast<unsigned>(decile * 10), static_cast<unsigned>(written),
+          static_cast<unsigned>(total));
 }
 
 // Mount the SD card and, if the update image is present, flash it and reboot
@@ -114,7 +112,7 @@ bool trySdUpdateAndReboot(const SdUpdateOptions& options) {
   if (!SdMan.begin()) return false;
   if (!SdMan.exists(options.path)) return false;
 
-  if (Serial) Serial.printf("[%lu] [FLASH] combo held, flashing %s\n", millis(), options.path);
+  LOG_INF("FLASH", "combo held, flashing %s", options.path);
   const firmware::ProgressCb cb = options.onProgress ? options.onProgress : serialProgress;
   void* ctx = options.onProgress ? options.progressCtx : nullptr;
   if (firmware::flashFromSdPath(options.path, cb, ctx) != firmware::Result::OK) return false;

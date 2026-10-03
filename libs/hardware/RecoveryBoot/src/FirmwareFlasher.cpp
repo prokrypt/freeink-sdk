@@ -1,6 +1,7 @@
 #include "FirmwareFlasher.h"
 
 #include <Arduino.h>
+#include <FreeInkLog.h>
 #include <SDCardManager.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
@@ -13,10 +14,7 @@
 
 #include "RecoveryBoot.h"
 
-#define FLASH_LOG(fmt, ...)                                                     \
-  do {                                                                          \
-    if (Serial) Serial.printf("[%lu] [FLASH] " fmt "\n", millis(), ##__VA_ARGS__); \
-  } while (0)
+#define FLASH_LOG(fmt, ...) LOG_INF("FLASH", fmt, ##__VA_ARGS__)
 
 namespace freeink {
 namespace firmware {
