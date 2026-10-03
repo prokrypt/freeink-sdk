@@ -109,6 +109,10 @@ class FreeInkDisplay {
   void setInverted(bool inverted);
   bool toggleInverted();
   bool isInverted() const { return _inverted; }
+  // Opt-in for overlay gray (text AA) while inverted, on drivers that fold it
+  // in panel polarity (PanelDriver::supportsInvertedOverlayGray). Off: every
+  // gray step is dropped while inverted, as before. Absolute/Direct stay off.
+  void setInvertedTextGray(bool enabled) { _invertedTextGray = enabled; }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   void swapBuffers();
 #endif
@@ -492,6 +496,10 @@ class FreeInkDisplay {
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
   bool _inversionDirty = false;
+  bool _invertedTextGray = false;
+  bool _pendingInverted = false;  // the pending refresh got an inverted frame: finish it inverted too
+  // True while inverted and overlay gray can't run inverted (see setInvertedTextGray).
+  bool invertedGrayBlocked() const;
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;
@@ -554,7 +562,8 @@ uint32_t uc8179FlashSwingDoneMs();
 // Which waveform that refresh runs, for per-kind flash duck timing: a direct
 // gray (AA) page, an OTP GC Half/Full, or a balanced DU paint (menus and the
 // drawer over gray, scrubs, re-drives; same LUT and length either way).
-enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint };
+// GrayDark: a Night Mode Sharpflash page (stock set: background swings white from frame 0).
+enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint, GrayDark };
 Uc8179FlashKind uc8179FlashKind();
 // millis() when the refresh now starting was planned to swing (0: none
 // planned, or DRF has resolved it into uc8179FlashSwingMs), and its kind. Set

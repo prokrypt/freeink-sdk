@@ -82,6 +82,10 @@ class Uc8179Driver : public PanelDriver {
   bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
   bool grayOnPanel() const override { return _directGrayOnPanel; }
   void setSmoothGray(bool smooth) override { _smoothGray = smooth; }
+  // Dark mode: overlay gray folds its planes in panel polarity and runs the
+  // mirrored hold and held re-drive sets (Sharp keeps the stock set).
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
+  bool supportsInvertedOverlayGray() const override { return true; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
@@ -168,6 +172,7 @@ class Uc8179Driver : public PanelDriver {
   bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
   bool _nullLut = false;  // this refresh runs makeNullLuts (requestUc8179NullNext)
   bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
+  bool _darkBackground = false;  // setBackgroundHint(): frames arrive inverted (dark mode)
   bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
   bool _absoluteInput = false;
