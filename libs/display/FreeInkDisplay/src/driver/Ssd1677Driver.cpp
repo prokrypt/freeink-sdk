@@ -1,6 +1,7 @@
 #include "Ssd1677Driver.h"
 
 #include <BoardConfig.h>
+#include <Logging.h>
 
 #include <vector>
 
@@ -390,9 +391,9 @@ void Ssd1677Driver::display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev,
 }
 
 // Deferred refresh: fire the update and return; displayFinish() waits it out.
-// Skips the single-buffer post-refresh baseline resync — the facade supplies
-// `prev` (its shadow) on shadowed updates, and the no-shadow/grayscale flow
-// re-seeds the baseline itself (cleanupGrayscaleBuffers).
+// Skips the single-buffer post-refresh baseline resync. When the facade supplied
+// `prev` (its shadow), displayFinish() re-seeds RED from the displayed frame; the
+// no-shadow/grayscale flow re-seeds the baseline itself (cleanupGrayscaleBuffers).
 bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode,
                                  bool turnOff) {
   displayImpl(bus, fb, prev, mode, turnOff, /*async=*/true);
@@ -400,8 +401,14 @@ bool Ssd1677Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* 
 }
 
 void Ssd1677Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
-  (void)fb;  // X4 post-waveform needs nothing from the host frame
   bus.waitRefreshComplete("refresh");
+  if (_pendingRedSync) {
+    _pendingRedSync = false;
+    if (fb != nullptr) {
+      setRamArea(bus, 0, 0, _w, _h);
+      writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+    }
+  }
   if (_pendingPowerOff) {
     _pendingPowerOff = false;
     powerOffController(bus);
@@ -475,12 +482,13 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   }
 
   refresh(bus, mode, turnOff, async);
+  _pendingRedSync = async && mode == RefreshMode::Fast && prev != nullptr;
 
   // Stock X4 syncs both controller RAM planes after activation. Do the same in
   // single-buffer mode so the next differential update starts from a matched
   // BW/RED baseline instead of assuming BW survived the refresh unchanged.
-  // (Async updates always come with a facade-owned prev, so this never runs
-  // while a refresh is still in flight.)
+  // (Async updates re-seed RED in displayFinish() instead, never while the
+  // refresh is still in flight.)
   if (prev == nullptr && !async) {
     setRamArea(bus, 0, 0, _w, _h);
     writeRam(bus, CMD_WRITE_RAM_BW, fb, _bufferSize);
@@ -652,6 +660,12 @@ void Ssd1677Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
 
 void Ssd1677Driver::setCustomLut(EpdBus& bus, bool enabled, const unsigned char* data) {
   if (!enabled) {
+    _customLutActive = false;
+    return;
+  }
+  // Only tables proven DC balanced at compile time (Ssd1677Luts.h) may load.
+  if (data != lut_grayscale && data != lut_grayscale_sticky && data != lut_factory_quality) {
+    LOG_ERR("EPD", "SSD1677: refused unchecked custom LUT");
     _customLutActive = false;
     return;
   }

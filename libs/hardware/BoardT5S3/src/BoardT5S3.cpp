@@ -1,5 +1,6 @@
 #include <BoardT5S3.h>
 
+#include <I2cBusLock.h>
 #include <InputManager.h>
 #include <SPI.h>
 #include <Wire.h>
@@ -13,15 +14,8 @@ constexpr uint8_t PCA_REG_INPUT0 = 0x00;
 constexpr uint8_t PCA_REG_OUTPUT0 = 0x02;
 constexpr uint8_t PCA_REG_CONFIG0 = 0x06;
 
-SemaphoreHandle_t i2cMutex = nullptr;
-
-SemaphoreHandle_t ensureI2CMutex() {
-  if (i2cMutex == nullptr) {
-    i2cMutex = xSemaphoreCreateRecursiveMutex();
-    assert(i2cMutex != nullptr && "Failed to create I2C mutex");
-  }
-  return i2cMutex;
-}
+// Same bus mutex the shared SDK drivers (touch, battery, RTC) take on Wire.
+SemaphoreHandle_t ensureI2CMutex() { return freeink::i2cBusMutex(Wire); }
 
 bool i2cWriteReg(uint8_t addr, uint8_t reg, const uint8_t* data, size_t len) {
   ScopedI2CLock lock;

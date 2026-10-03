@@ -3,13 +3,16 @@
 #if FREEINK_SD_SDMMC
 
 #include <Arduino.h>
+#include <FreeInkLog.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_heap_caps.h"
+#include "esp_memory_utils.h"
 
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
+#include "esp_system.h"
 #include "sdmmc_cmd.h"
 
 namespace freeink {
@@ -82,9 +85,17 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // first (un-retried) block read to hit a still-marginal data path and fail with
   // 0x107; validating a real read here means _card is only published once genuine
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
+  // After a software reset the card stayed powered and was working, so the
+  // first attempt skips the 200 ms power cycle; CMD0 in sdmmc_card_init resets
+  // it. A failure falls through to the power-cycled attempts below.
+  const bool warmStart = esp_reset_reason() == ESP_RST_SW;
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
-    if (sdPwr >= 0) {
+    if (sdPwr >= 0 && warmStart && attempt == 0) {
+      digitalWrite(sdPwr, LOW);  // run with the enable held LOW
+    } else if (sdPwr >= 0) {
+      if (warmStart && attempt == 1)
+        LOG_ERR("SD", "SDMMC warm mount failed (%s), power-cycling", esp_err_to_name(mountErr));
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
@@ -101,8 +112,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     if (e == ESP_OK) break;
   }
   if (mountErr != ESP_OK) {
-    if (Serial)
-      Serial.printf("[%lu] [SD] SDMMC mount failed after retries: %s\n", millis(), esp_err_to_name(mountErr));
+    LOG_ERR("SD", "SDMMC mount failed after retries: %s", esp_err_to_name(mountErr));
     heap_caps_free(_dmaBuffer);
     _dmaBuffer = nullptr;
     free(card);
@@ -129,8 +139,15 @@ void SdmmcBlockDevice::end() {
 // internal RAM and word-aligned. SdFat's cache buffers aren't guaranteed to be
 // (PSRAM / arbitrary alignment), which makes sdmmc_read/write_sectors fail. Bounce
 // through a DMA-capable buffer. (heap_caps_aligned_alloc via MALLOC_CAP_DMA.)
+// A caller buffer that already satisfies DMA (internal RAM, word-aligned) is read
+// directly in one multi-block transfer: no bounce copy and no 8-sector cap, so a
+// large sequential read (e.g. a firmware image) costs one command per call.
 bool SdmmcBlockDevice::readSectors(Sector_t sector, uint8_t* dst, size_t ns) {
   if (!_card || !_dmaBuffer || !dst || ns == 0) return false;
+  if (ns > 1 && esp_ptr_dma_capable(dst) && (reinterpret_cast<uintptr_t>(dst) & 3) == 0 &&
+      sdmmc_read_sectors(static_cast<sdmmc_card_t*>(_card), dst, sector, ns) == ESP_OK) {
+    return true;
+  }
   while (ns > 0) {
     const size_t count = ns > kMaxTransferSectors ? kMaxTransferSectors : ns;
     const size_t bytes = count * kSectorSize;

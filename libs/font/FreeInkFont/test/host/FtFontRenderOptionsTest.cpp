@@ -12,6 +12,7 @@
 #include "FtFont.h"
 
 using freeink::font::FtFont;
+using freeink::font::FtLibrary;
 
 namespace {
 
@@ -291,6 +292,28 @@ int main(int argc, char** argv) {
       }
     }
     expect(nativeRestored, "Native v35 face restores its interpreter after Default rendered");
+  }
+
+  // A second library keeps its own allocator: a worker task can rasterize
+  // through it without touching the default library's arena or properties.
+  {
+    AllocationStats workerStats;
+    FtFont::MemoryCallbacks workerMemory{&workerStats, testAllocate, testDeallocate, testReallocate};
+    FtLibrary worker;
+    expect(worker.configureMemory(&workerMemory), "second library accepts its own allocator");
+    FtFont workerFont;
+    workerFont.setLibrary(&worker);
+    const size_t defaultBefore = allocationStats.allocations;
+    expect(workerFont.init(bytes.data(), static_cast<uint32_t>(bytes.size()), 16), "font opens on second library");
+    expect(workerFont.rasterize('A', 16) != nullptr, "second library rasterizes");
+    expect(worker.started() && workerStats.allocations > 0, "second library allocates through its own callbacks");
+    expect(allocationStats.allocations == defaultBefore, "second library leaves the default allocator untouched");
+    expect(!worker.configureMemory(nullptr), "second library allocator freezes after first use");
+    workerFont.setLibrary(nullptr);
+    expect(!workerFont.ready(), "rebinding a font closes its face");
+    expect(workerFont.init(bytes.data(), static_cast<uint32_t>(bytes.size()), 16) &&
+               allocationStats.allocations > defaultBefore,
+           "rebinding to the default library uses the default allocator");
   }
 
   printf("\n%d/%d checks passed\n", checks - failures, checks);

@@ -47,34 +47,39 @@ struct GrayLut {
   uint8_t cmd;
   uint8_t data[GRAY_LUT_LEN];
 };
+// Anti-aliasing banks, balanced: every row drives the opposite rail first for
+// the same frames (toward the pixel's current saturated state, so invisible),
+// then the stock push. Stock pushed WW +1, gray -2/-3, BB -1 one way per AA
+// page (QY/ZHX). The stock push moves one phase later; 6 (QY) / 8 (ZHX) frames.
 constexpr GrayLut kXtfAa02[5] = {
     {0x20, {0x01, 0x02, 0x02, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // VCOM
-    {0x21, {0x01, 0x02, 0x02, 0x41, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WW
-    {0x22, {0x01, 0x02, 0x82, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BW (dark gray)
-    {0x23, {0x01, 0x02, 0x82, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WB (dark gray)
-    {0x24, {0x01, 0x02, 0x02, 0x81, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BB
+    {0x21, {0x01, 0x02, 0x02, 0x81, 0x41, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WW
+    {0x22, {0x01, 0x42, 0x82, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BW (dark gray)
+    {0x23, {0x01, 0x42, 0x82, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WB (dark gray)
+    {0x24, {0x01, 0x02, 0x02, 0x41, 0x81, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BB
 };
 constexpr GrayLut kXtfAa68[5] = {
-    {0x20, {0x01, 0x02, 0x03, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // VCOM
-    {0x21, {0x01, 0x02, 0x03, 0x41, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WW
-    {0x22, {0x01, 0x02, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BW (dark gray)
-    {0x23, {0x01, 0x02, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WB (dark gray)
-    {0x24, {0x01, 0x02, 0x03, 0x81, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BB
+    {0x20, {0x01, 0x03, 0x03, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // VCOM
+    {0x21, {0x01, 0x03, 0x03, 0x81, 0x41, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WW
+    {0x22, {0x01, 0x43, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BW (dark gray)
+    {0x23, {0x01, 0x43, 0x83, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // WB (dark gray)
+    {0x24, {0x01, 0x03, 0x03, 0x41, 0x81, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01}},  // BB
 };
 
-// UC8279_aa_prebw_mid — the stock non-flashing previous->current transition
-// waveform (Factory.bin DROM 0x3c5d826f, uploaded by FUN_4214d3a0). 5 tables,
-// command-prefixed, 42 data bytes each (distinct from the 49-byte display bank).
-// Same layout as the UC8179 sibling's kGrayPreBwMid.
+// Gray planes select a level, not a transition: every row must net zero.
+constexpr bool grayLutBalanced(const GrayLut (&bank)[5]) {
+  for (uint8_t r = 0; r < 5; ++r) {
+    if (bank[r].cmd != 0x20 + r || lutbalance::uc8279RowNet(bank[r].data, GRAY_LUT_LEN) != 0) return false;
+  }
+  return true;
+}
+static_assert(grayLutBalanced(kXtfAa02), "QY AA bank not DC balanced");
+static_assert(grayLutBalanced(kXtfAa68), "ZHX AA bank not DC balanced");
+
+// UC8279_aa_prebw_mid (Factory.bin DROM 0x3c5d826f, uploaded by FUN_4214d3a0)
+// is byte-identical to the X3's XTF_PRE_BW_MID: use the gated, balanced copy.
 constexpr uint8_t PREBW_LUT_LEN = 42;
-const uint8_t kXtfPreBwMid[5][PREBW_LUT_LEN + 1] = {
-    {0x20, 0x01, 0x06, 0x01, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x04, 0x00, 0x00, 0x01, 0x01},
-    {0x21, 0x01, 0x06, 0x81, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x04, 0x00, 0x00, 0x01, 0x01},
-    {0x22, 0x01, 0x86, 0x81, 0x86, 0x86, 0x01, 0x01, 0x01, 0x82, 0x84, 0x00, 0x00, 0x01, 0x01},
-    {0x23, 0x01, 0x46, 0x41, 0x46, 0x46, 0x01, 0x01, 0x01, 0x42, 0x44, 0x00, 0x00, 0x01, 0x01},
-    {0x24, 0x01, 0x06, 0x01, 0x06, 0x06, 0x01, 0x01, 0x01, 0x02, 0x44, 0x00, 0x00, 0x01, 0x01},
-    // remaining bytes of each 42-byte table are zero (aggregate init).
-};
+constexpr const auto& kXtfPreBwMid = kUc8279X3_XtfPreBwMid;
 
 const GrayLut* selectAaLuts() {
   // LUT_VER stored by the boot probe. Stock's panel LUT registry (X4 Pro
@@ -202,6 +207,12 @@ constexpr GrayBank makeQualityBank() {
 }
 
 constexpr GrayBank kQualityBank = makeQualityBank();
+constexpr bool qualityBankBalanced() {
+  for (uint8_t r = 0; r < 5; ++r)
+    if (lutbalance::uc8279RowNet(kQualityBank.data[r], GRAY_LUT_LEN) != 0) return false;
+  return true;
+}
+static_assert(qualityBankBalanced(), "UC8279X4 quality gray bank not DC balanced");
 
 // Register order for the quality bank: 0x22 and 0x23 exchanged relative to
 // table order (inx-pro's empirically found assignment for this panel).
@@ -408,44 +419,22 @@ bool Uc8279X4Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t*
   }
   // Same differential model as the UC8179 sibling: only an EXPLICIT Fast request
   // uses the PTIN/PTOUT DU partial (OLD plane = previous displayed frame). Full
-  // AND Half both run the clearing OTP GC waveform — but they seed the OLD plane
-  // DIFFERENTLY (this is the load-bearing distinction, copied from UC8179):
-  //   * Half = charge SCRUB: OLD = complement of the target, so EVERY pixel
-  //     (including white background) is forced through a transition cell and no
-  //     WW/BB pixel idles with stale AA charge. A white-seed GC only redraws
-  //     black-target pixels and leaves background ghost parked in WW — that was
-  //     the residual ghosting seen after fix9's white-seed Half.
+  // AND Half both run the clearing OTP GC waveform. Nothing feeds the OTP a
+  // complement OLD plane (~target): that re-runs K->W on every white pixel and
+  // W->K on every black one each time, a one-way drive unless the (unreadable)
+  // OTP rows net zero. Same rule as the UC8179 sibling:
+  //   * Half keeps the true previous frame in DTM1 (real transitions and holds);
+  //     on an unknown panel state it seeds white like Full.
   //   * Full = absolute-from-white seed (the known clean full flash).
-  // Half is CrossPoint's periodic ghost-cleanup (every getRefreshFrequency()
-  // pages) AND the manual force-refresh; it MUST scrub, exactly like UC8179.
+  //   * Leaving direct gray: no OLD plane is true, so the GC runs from white
+  //     (_needFullClear is set) instead of a complement-OLD DU paint first.
+  //   * The first Fast after AA diffs against the B/W base restored in DTM1.
+  if (paintDestination) _oldPlaneValid = false;
   const bool scrub = (mode == RefreshMode::Half);
   const bool fast = (mode == RefreshMode::Fast) && !_needFullClear && _oldPlaneValid;
 
-  if (paintDestination) {
-    streamPlane(bus, CMD_DTM1, fb, true);
-    streamPlane(bus, CMD_DTM2, fb);
-    startBwRefresh(bus, true);
-    bus.waitRefreshComplete(" 8279x4_BW_TARGET_DRF");
-    bus.cmd(CMD_PARTIAL_OUT);
-  }
-
   streamPlane(bus, CMD_DTM2, fb);
-  if (!fast) {
-    if (scrub) {
-      // Half scrub: OLD = ~target -> every pixel transitions, purging idle charge.
-      streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-    } else {
-      // Full flash: seed the OLD plane white across the whole 600-gate scan for
-      // the absolute GC-from-white waveform.
-      bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
-    }
-  } else if (_redriveAfterGray) {
-    // Re-drive every pixel once after grayscale so the B/W transition scrubs
-    // residual edge charge before restoring the ordinary differential baseline.
-    streamPlane(bus, CMD_DTM1, fb, /*invert=*/true);
-  }
-  // Consumed: the white-seed (!fast) or the re-drive above already scrubbed any
-  // post-AA gray residue for this frame.
+  if (!fast && !(scrub && _oldPlaneValid)) bus.fillPlane(CMD_DTM1, 0xFF, _tresH, _wb);
   _redriveAfterGray = false;
 
   startBwRefresh(bus, fast);

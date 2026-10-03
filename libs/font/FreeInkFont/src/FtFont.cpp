@@ -19,50 +19,23 @@ namespace freeink {
 namespace font {
 
 namespace {
-FtFont::MemoryCallbacks g_memoryCallbacks{};
-
-void* fontAlloc(const size_t size) {
-  return g_memoryCallbacks.allocate ? g_memoryCallbacks.allocate(g_memoryCallbacks.context, size) : fiFontMalloc(size);
-}
-void fontFree(void* block) {
-  if (g_memoryCallbacks.deallocate)
-    g_memoryCallbacks.deallocate(g_memoryCallbacks.context, block);
-  else
-    fiFontFree(block);
-}
-void* fontRealloc(void* block, const size_t oldSize, const size_t newSize) {
-  return g_memoryCallbacks.reallocate ? g_memoryCallbacks.reallocate(g_memoryCallbacks.context, block, oldSize, newSize)
-                                      : fiFontRealloc(block, newSize);
-}
-
 // FreeType memory hooks use either the caller's bounded allocator or the
-// platform's PSRAM-preferring default. The shared library is initialized only
-// once, so configureMemory() deliberately freezes this choice before first use.
-void* ftAlloc(FT_Memory, long size) { return size > 0 ? fontAlloc(static_cast<size_t>(size)) : nullptr; }
-void ftFree(FT_Memory, void* block) { fontFree(block); }
-void* ftRealloc(FT_Memory, long currentSize, long newSize, void* block) {
+// platform's PSRAM-preferring default. A library is initialized once, so
+// configureMemory() deliberately freezes this choice before first use.
+void* ftAlloc(FT_Memory memory, long size) {
+  return size > 0 ? static_cast<FtLibrary*>(memory->user)->allocate(static_cast<size_t>(size)) : nullptr;
+}
+void ftFree(FT_Memory memory, void* block) { static_cast<FtLibrary*>(memory->user)->deallocate(block); }
+void* ftRealloc(FT_Memory memory, long currentSize, long newSize, void* block) {
   if (currentSize < 0 || newSize < 0) return nullptr;
-  return fontRealloc(block, static_cast<size_t>(currentSize), static_cast<size_t>(newSize));
+  return static_cast<FtLibrary*>(memory->user)
+      ->reallocate(block, static_cast<size_t>(currentSize), static_cast<size_t>(newSize));
 }
 
-// One shared FreeType library for all faces; the library object itself is tiny.
-FT_Library g_lib = nullptr;
-FT_MemoryRec_ g_ftMemory{};
-bool ensureLib(FT_Error* error = nullptr) {
-  if (g_lib) {
-    if (error) *error = 0;
-    return true;
-  }
-  g_ftMemory.user = nullptr;
-  g_ftMemory.alloc = &ftAlloc;
-  g_ftMemory.free = &ftFree;
-  g_ftMemory.realloc = &ftRealloc;
-  const FT_Error initError = FT_New_Library(&g_ftMemory, &g_lib);
-  if (error) *error = initError;
-  if (initError != 0) return false;
-  FT_Add_Default_Modules(g_lib);  // register the sfnt/truetype/smooth/... modules
-  return true;
-}
+// The shared default library; the library object itself is tiny. It is never
+// torn down, so fonts in other static objects stay valid at process exit.
+FtLibrary g_defaultLibrary;
+
 constexpr uint32_t kTagWght = FT_MAKE_TAG('w', 'g', 'h', 't');
 constexpr uint32_t kTagItal = FT_MAKE_TAG('i', 't', 'a', 'l');
 constexpr uint32_t kTagSlnt = FT_MAKE_TAG('s', 'l', 'n', 't');
@@ -235,15 +208,76 @@ int32_t fixed16_16To26_6(const long value) {
 }
 }  // namespace
 
-bool FtFont::configureMemory(const MemoryCallbacks* callbacks) {
-  if (g_lib) return false;
+bool FtFont::configureMemory(const MemoryCallbacks* callbacks) { return g_defaultLibrary.configureMemory(callbacks); }
+
+FtLibrary::~FtLibrary() {
+  if (this == &g_defaultLibrary) return;
+  if (lib_) FT_Done_Library(lib_);
+  lib_ = nullptr;
+  deallocate(memory_);
+  memory_ = nullptr;
+}
+
+bool FtLibrary::configureMemory(const FtFont::MemoryCallbacks* callbacks) {
+  if (lib_) return false;
   if (!callbacks) {
-    g_memoryCallbacks = MemoryCallbacks{};
+    callbacks_ = FtFont::MemoryCallbacks{};
     return true;
   }
   if (!callbacks->allocate || !callbacks->deallocate || !callbacks->reallocate) return false;
-  g_memoryCallbacks = *callbacks;
+  callbacks_ = *callbacks;
   return true;
+}
+
+void* FtLibrary::allocate(const size_t size) {
+  return callbacks_.allocate ? callbacks_.allocate(callbacks_.context, size) : fiFontMalloc(size);
+}
+void FtLibrary::deallocate(void* block) {
+  if (callbacks_.deallocate)
+    callbacks_.deallocate(callbacks_.context, block);
+  else
+    fiFontFree(block);
+}
+void* FtLibrary::reallocate(void* block, const size_t oldSize, const size_t newSize) {
+  return callbacks_.reallocate ? callbacks_.reallocate(callbacks_.context, block, oldSize, newSize)
+                               : fiFontRealloc(block, newSize);
+}
+
+bool FtLibrary::ensure(int* error) {
+  if (lib_) {
+    if (error) *error = 0;
+    return true;
+  }
+  // FreeType keeps a pointer to the memory record for the library's lifetime.
+  // It is allocated through the same callbacks rather than stored inline so
+  // this header does not need FreeType's type definitions.
+  if (!memory_) memory_ = allocate(sizeof(FT_MemoryRec_));
+  if (!memory_) {
+    if (error) *error = FT_Err_Out_Of_Memory;
+    return false;
+  }
+  auto* memory = static_cast<FT_MemoryRec_*>(memory_);
+  memory->user = this;
+  memory->alloc = &ftAlloc;
+  memory->free = &ftFree;
+  memory->realloc = &ftRealloc;
+  FT_Library lib = nullptr;
+  const FT_Error initError = FT_New_Library(memory, &lib);
+  if (error) *error = initError;
+  if (initError != 0) return false;
+  FT_Add_Default_Modules(lib);  // register the sfnt/truetype/smooth/... modules
+  lib_ = lib;
+  return true;
+}
+
+FtLibrary& FtFont::lib() const { return library_ ? *library_ : g_defaultLibrary; }
+
+void FtFont::setLibrary(FtLibrary* library) {
+  if (library == &g_defaultLibrary) library = nullptr;
+  if (library == library_) return;
+  // Scratch buffers and the face belong to the old library's allocator.
+  deinit();
+  library_ = library;
 }
 
 FtFont::InspectResult FtFont::inspectMemory(const uint8_t* data, const uint32_t length, FaceInfo& info, char* family,
@@ -252,10 +286,10 @@ FtFont::InspectResult FtFont::inspectMemory(const uint8_t* data, const uint32_t 
   if (familyCapacity && !family) return InspectResult::Unsupported;
   if (familyCapacity) family[0] = '\0';
   if (!data || !length) return InspectResult::Unsupported;
-  if (!ensureLib()) return InspectResult::Unavailable;
+  if (!g_defaultLibrary.ensure()) return InspectResult::Unavailable;
 
   FT_Face face = nullptr;
-  const FT_Error error = FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(length), 0, &face);
+  const FT_Error error = FT_New_Memory_Face(g_defaultLibrary.lib_, data, static_cast<FT_Long>(length), 0, &face);
   if (error) return error == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   const bool valid = supportedFace(face);
   if (valid) describeFace(face, info, family, familyCapacity);
@@ -269,7 +303,7 @@ FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const 
   if (familyCapacity && !family) return InspectResult::Unsupported;
   if (familyCapacity) family[0] = '\0';
   if (!read || !fileSize) return InspectResult::Unsupported;
-  if (!ensureLib()) return InspectResult::Unavailable;
+  if (!g_defaultLibrary.ensure()) return InspectResult::Unavailable;
 
   StreamCtx source{read, ctx, false};
   FT_StreamRec stream{};
@@ -281,7 +315,7 @@ FtFont::InspectResult FtFont::inspectStream(const ReadFn read, void* ctx, const 
   args.flags = FT_OPEN_STREAM;
   args.stream = &stream;
   FT_Face face = nullptr;
-  const FT_Error error = FT_Open_Face(g_lib, &args, 0, &face);
+  const FT_Error error = FT_Open_Face(g_defaultLibrary.lib_, &args, 0, &face);
   if (error) {
     return source.failed || error == FT_Err_Out_Of_Memory ? InspectResult::Unavailable : InspectResult::Unsupported;
   }
@@ -298,9 +332,9 @@ void FtFont::deinit() {
     FT_Done_Face(static_cast<FT_Face>(face_));
     face_ = nullptr;
   }
-  fontFree(stream_);
+  lib().deallocate(stream_);
   stream_ = nullptr;
-  fontFree(streamCtx_);
+  lib().deallocate(streamCtx_);
   streamCtx_ = nullptr;
   ready_ = false;
   lastGlyphFailure_ = GlyphFailure::None;
@@ -326,7 +360,7 @@ void FtFont::deinit() {
 }
 
 void FtFont::freeGsubTable() {
-  if (gsubTableOwned_) fontFree(const_cast<uint8_t*>(gsubTable_));
+  if (gsubTableOwned_) lib().deallocate(const_cast<uint8_t*>(gsubTable_));
   gsubTable_ = nullptr;
   gsubTableSize_ = 0;
   gsubTableOwned_ = false;
@@ -343,7 +377,7 @@ void FtFont::releaseLigatureTable() {
 }
 
 void FtFont::freeGposTable() {
-  if (gposTableOwned_) fontFree(const_cast<uint8_t*>(gposTable_));
+  if (gposTableOwned_) lib().deallocate(const_cast<uint8_t*>(gposTable_));
   gposTable_ = nullptr;
   gposTableSize_ = 0;
   gposTableOwned_ = false;
@@ -368,8 +402,8 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
   // second init() without deinit() previously dropped the old FT_Face
   // without ever calling FT_Done_Face on it.
   deinit();
-  FT_Error libraryError = 0;
-  if (!ensureLib(&libraryError)) {
+  int libraryError = 0;
+  if (!lib().ensure(&libraryError)) {
     lastInitFailure_ = InitFailure::Library;
     lastInitError_ = libraryError;
     return false;
@@ -381,7 +415,7 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
   fontData_ = data;
   fontDataSize_ = len;
   FT_Face face = nullptr;
-  const FT_Error error = FT_New_Memory_Face(g_lib, data, static_cast<FT_Long>(len), 0, &face);
+  const FT_Error error = FT_New_Memory_Face(lib().lib_, data, static_cast<FT_Long>(len), 0, &face);
   if (error != 0) {
     lastInitFailure_ = InitFailure::OpenFace;
     lastInitError_ = error;
@@ -396,8 +430,8 @@ bool FtFont::init(const uint8_t* data, const uint32_t len, const uint16_t sizePx
 bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSize, const uint16_t sizePx,
                         const int weight, const bool italic) {
   deinit();  // see the comment in init() — same reasoning applies here
-  FT_Error libraryError = 0;
-  if (!ensureLib(&libraryError)) {
+  int libraryError = 0;
+  if (!lib().ensure(&libraryError)) {
     lastInitFailure_ = InitFailure::Library;
     lastInitError_ = libraryError;
     return false;
@@ -410,12 +444,12 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   // These wrappers must outlive the face, so they use the configured font
   // allocator rather than a small task stack frame. Both allocations are
   // bounded and failure is reported to the caller.
-  auto* sc = static_cast<StreamCtx*>(fontAlloc(sizeof(StreamCtx)));
-  auto* stream = static_cast<FT_StreamRec*>(fontAlloc(sizeof(FT_StreamRec)));
+  auto* sc = static_cast<StreamCtx*>(lib().allocate(sizeof(StreamCtx)));
+  auto* stream = static_cast<FT_StreamRec*>(lib().allocate(sizeof(FT_StreamRec)));
   if (!sc || !stream) {
     lastInitFailure_ = InitFailure::Allocation;
-    fontFree(stream);
-    fontFree(sc);
+    lib().deallocate(stream);
+    lib().deallocate(sc);
     return false;
   }
   *sc = StreamCtx{read, ctx, false};
@@ -432,12 +466,12 @@ bool FtFont::initStream(const ReadFn read, void* ctx, const unsigned long fileSi
   args.flags = FT_OPEN_STREAM;
   args.stream = stream;
   FT_Face face = nullptr;
-  const FT_Error error = FT_Open_Face(g_lib, &args, 0, &face);
+  const FT_Error error = FT_Open_Face(lib().lib_, &args, 0, &face);
   if (error != 0) {
     lastInitFailure_ = InitFailure::OpenFace;
     lastInitError_ = error;
-    fontFree(stream);
-    fontFree(sc);
+    lib().deallocate(stream);
+    lib().deallocate(sc);
     stream_ = nullptr;
     streamCtx_ = nullptr;
     return false;
@@ -496,7 +530,7 @@ void FtFont::applyVariation(const int weight, const bool italic) {
       }
     }
     FT_Set_Var_Design_Coordinates(face, n, coords);
-    FT_Done_MM_Var(g_lib, mm);
+    FT_Done_MM_Var(lib().lib_, mm);
     obliqueShear_ = italic && !haveItalAxis;
     emboldenBold_ = wantBold && !haveWghtAxis;  // variable but no wght axis
   }
@@ -522,7 +556,7 @@ bool FtFont::setRenderOptions(const RenderOptions& options) {
   return supported;
 }
 
-// Both FT_Property_Set targets live on the shared library, not this face —
+// Both FT_Property_Set targets live on this font's library, not this face —
 // FT_Property_Set has no per-face scope. Applying them here, immediately
 // before THIS face's own FT_Load_Char (not once back in setRenderOptions()),
 // is what actually prevents cross-face leakage: setting them eagerly at
@@ -533,20 +567,21 @@ bool FtFont::setRenderOptions(const RenderOptions& options) {
 // right before the one call that consumes them means only the face actually
 // rendering right now can be the one that matters, for that one load.
 void FtFont::applyGlobalProperties() const {
-  if (!ensureLib()) return;
+  FtLibrary& library = lib();
+  if (!library.ensure()) return;
   FT_Bool noStemDarkening = options_.stemDarkening ? 0 : 1;
-  FT_Property_Set(g_lib, "autofitter", "no-stem-darkening", &noStemDarkening);
+  FT_Property_Set(library.lib_, "autofitter", "no-stem-darkening", &noStemDarkening);
 #if FREEINK_FONT_ENABLE_NATIVE_HINTING
   // The TrueType interpreter version is library-global. Restore it before
   // every load so a face rendered with Native v35 cannot affect a later
   // Default/Auto/None face (Default uses FreeType's normal v40 behavior).
   const FT_UInt version = options_.hinting == HintingMode::Native ? options_.interpreterVersion : 40;
-  FT_Property_Set(g_lib, "truetype", "interpreter-version", &version);
+  FT_Property_Set(library.lib_, "truetype", "interpreter-version", &version);
 #endif
 }
 
 void FtFont::freeMonoBuffer() {
-  fontFree(monoBuf_);
+  lib().deallocate(monoBuf_);
   monoBuf_ = nullptr;
   monoBufCap_ = 0;
 }
@@ -556,8 +591,8 @@ const uint8_t* FtFont::expandMonoCoverage(const void* ftBitmapPtr) {
   const size_t pixels = size_t(bitmap.width) * bitmap.rows;
   if (pixels == 0) return monoBuf_;  // empty glyph (e.g. space): nothing to expand
   if (pixels > monoBufCap_) {
-    fontFree(monoBuf_);
-    monoBuf_ = static_cast<uint8_t*>(fontAlloc(pixels));
+    lib().deallocate(monoBuf_);
+    monoBuf_ = static_cast<uint8_t*>(lib().allocate(pixels));
     monoBufCap_ = monoBuf_ ? pixels : 0;
     if (!monoBuf_) return nullptr;
   }
@@ -773,10 +808,10 @@ void FtFont::ensureGsubLoaded() {
   }
   // Fallible allocation, deliberately not PsramVector (see the header
   // comment): a missing GSUB table just means no ligatures, not a crash.
-  auto* buffer = static_cast<uint8_t*>(fontAlloc(length));
+  auto* buffer = static_cast<uint8_t*>(lib().allocate(length));
   if (!buffer) return;
   if (FT_Load_Sfnt_Table(face, kTagGsub, 0, buffer, &length) != 0) {
-    fontFree(buffer);
+    lib().deallocate(buffer);
     return;
   }
   gsubTable_ = buffer;
@@ -808,10 +843,10 @@ void FtFont::ensureGposLoaded() {
   }
   // Fallible allocation, same policy as the GSUB copy: a missing GPOS table
   // just means no pair kerning, not a crash.
-  auto* buffer = static_cast<uint8_t*>(fontAlloc(length));
+  auto* buffer = static_cast<uint8_t*>(lib().allocate(length));
   if (!buffer) return;
   if (FT_Load_Sfnt_Table(face, kTagGpos, 0, buffer, &length) != 0) {
-    fontFree(buffer);
+    lib().deallocate(buffer);
     return;
   }
   gposTable_ = buffer;

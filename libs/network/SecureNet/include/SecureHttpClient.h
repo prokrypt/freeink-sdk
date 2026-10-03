@@ -38,8 +38,11 @@
 #include <algorithm>
 #include <cctype>
 #include <iterator>
+#include <memory>
+#include <new>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <utility>
@@ -274,7 +277,10 @@ class SecureHttpClient {
       _reportProgress = !discardBody && static_cast<bool>(_progress);
 
       bool reusableFraming = true;
-      if (transferEncoding.find("chunked") != std::string::npos) {
+      if (strcmp(method, "HEAD") == 0) {
+        // No body follows a HEAD response; Content-Length describes the GET.
+        _bodyComplete = true;
+      } else if (transferEncoding.find("chunked") != std::string::npos) {
         _bodyComplete = readChunked(*_conn, bodySink, shouldAbort);
       } else if (transferEncoding.empty() || transferEncoding == "identity") {
         if (_haveContentLength) {
@@ -512,12 +518,13 @@ class SecureHttpClient {
 
   // Streams exactly `count` body bytes.
   bool readFixed(Client& c, size_t count, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
-    uint8_t buf[READ_CHUNK];
+    uint8_t* const buf = readBuffer();
+    if (!buf) return false;
     size_t remaining = count;
     unsigned long deadline = millis() + _timeoutMs;
     while (remaining > 0) {
       if (isAborted(shouldAbort)) return false;
-      const size_t want = remaining < sizeof(buf) ? remaining : sizeof(buf);
+      const size_t want = remaining < READ_CHUNK ? remaining : READ_CHUNK;
       const int n = c.read(buf, want);
       if (n <= 0) {
         if (!c.connected() && c.available() == 0) return false;
@@ -533,14 +540,17 @@ class SecureHttpClient {
   }
 
   // Streams body bytes until the peer closes (Connection: close, no length).
+  // Only an orderly close ends the body: a TLS read error (out of memory, bad
+  // MAC) also drops the connection, and must not pass as a complete response.
   bool readUntilClose(Client& c, const DataCallback& onData, const AbortCallback& shouldAbort = nullptr) {
-    uint8_t buf[READ_CHUNK];
+    uint8_t* const buf = readBuffer();
+    if (!buf) return false;
     unsigned long deadline = millis() + _timeoutMs;
     for (;;) {
       if (isAborted(shouldAbort)) return false;
-      const int n = c.read(buf, sizeof(buf));
+      const int n = c.read(buf, READ_CHUNK);
       if (n <= 0) {
-        if (!c.connected() && c.available() == 0) return true;
+        if (!c.connected() && c.available() == 0) return !(&c == &_secure && _secure.readFailed());
         if (static_cast<int32_t>(millis() - deadline) >= 0) return false;
         delay(2);
         continue;
@@ -574,9 +584,15 @@ class SecureHttpClient {
   // Body read buffer. 2 KB drains wolfSSL's decrypted TLS records in few
   // enough read() calls to keep large downloads moving: at 512 B a consuming
   // firmware measured ~30 KB/s and slow CDNs (Cloudflare) dropped the
-  // connection mid-stream; 2 KB removed the stall. Stack-allocated in the
-  // body readers, so kept modest.
+  // connection mid-stream; 2 KB removed the stall. Heap, allocated on the
+  // first body and kept with the client: on the stack it sat under every
+  // body callback and abort poll (parsers, input polling) of the calling task.
   static constexpr size_t READ_CHUNK = 2048;
+  std::unique_ptr<uint8_t[]> _readBuf;
+  uint8_t* readBuffer() {
+    if (!_readBuf) _readBuf.reset(new (std::nothrow) uint8_t[READ_CHUNK]);
+    return _readBuf.get();
+  }
   static constexpr size_t MAX_LINE = 4096;  // header / chunk-size line cap
 
   // Kept-alive connection state. _conn points at _secure or _plain while a

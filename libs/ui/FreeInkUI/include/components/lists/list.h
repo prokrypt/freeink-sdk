@@ -101,6 +101,9 @@ struct ListProps {
   int16_t rowHeight = 0;
   int16_t rowGap = -1;
   uint8_t rowRadius = 0;
+  // A 1px rule between visible rows, inset to the content edges. None
+  // inherits Screen's theme; raw list() draws no separators by default.
+  Paint separatorPaint = Paint::none();
   int16_t sidePadding = -1;
   int16_t textGap = 10;
   int16_t iconSize = 0;
@@ -108,6 +111,10 @@ struct ListProps {
   // trailing chevron/value keeps air from the row edge on themes with tight
   // row padding.
   int16_t valueInset = 0;
+  // Row icons draw left of the label, out to the screen edge (RTL: in the side
+  // padding), scaled down to fit, so labels and values do not move: status
+  // marks, not row icons.
+  bool iconsInMargin = false;
   // When a multi-line label would otherwise overlap its trailing value, keep
   // the wrapped title band visually balanced with that value. Callers with a
   // short, secondary value (such as a file extension) can disable this to
@@ -180,6 +187,9 @@ struct ListProps {
   // Explicit vertical content padding. -1 preserves legacy row-height-derived
   // padding; non-negative values make rowHeight a minimum, growing to content.
   int16_t rowPaddingY = -1;
+  // Draw no row as selected while keeping selectedIndex for scrolling/nav
+  // (touch screens that only show a selection after a button press).
+  bool hideSelection = false;
 };
 
 // Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
@@ -442,6 +452,11 @@ struct ListRowLayout {
   uint8_t labelLines = 1;
 };
 
+// ListProps::iconsInMargin; defined once in FreeInkUI.cpp (list() is a template).
+void drawListMarginIcon(DrawTarget &target, const Rect &content,
+                        int16_t sidePad, const ListProps &props, const BitmapRef &icon,
+                        const Paint &foreground);
+
 inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *assets,
                                     const int16_t width, const ListProps &props,
                                     const ListItem &item) {
@@ -449,7 +464,7 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
   const int16_t labelLh = target.lineHeight(props.labelText.font);
-  const BitmapRef icon = item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
+  const BitmapRef icon = props.iconsInMargin ? BitmapRef{} : item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
                                                    (icon ? iconSize + props.textGap : 0));
@@ -578,6 +593,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
   int16_t cursorY = rowArea.y;
   uint16_t consumedIndexes = 0; // item AND header indexes laid out from top
   bool selectedDrawn = false;
+  bool previousWasRow = false;
   for (uint16_t i = top; i < props.count; ++i) {
     // Stop before reading the next window entry. The size/layout work below
     // dereferences `item`, so checking after it would require callers that
@@ -596,6 +612,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     const ListItem &item =
         props.rowProvider ? scratch : props.items[i - props.itemsWindowFirst];
     if (item.isHeader) {
+      previousWasRow = false;
       const int16_t pad = i != top ? props.sectionGap : 0;
       if (static_cast<int16_t>(cursorY + pad + headerH) > rowArea.bottom())
         break;
@@ -659,6 +676,14 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
         selectedDrawn = true;
     }
     Rect row{rowArea.x, cursorY, rowArea.width, itemH};
+    if (previousWasRow && !hasSectionHeading && props.separatorPaint.kind != PaintKind::None &&
+        rowArea.width > sidePad * 2) {
+      frame.target().fill(
+          Rect{static_cast<int16_t>(rowArea.x + sidePad), static_cast<int16_t>(row.y - (rowGap > 1 ? rowGap / 2 : 1)),
+               static_cast<int16_t>(rowArea.width - sidePad * 2), 1},
+          props.separatorPaint);
+    }
+    previousWasRow = true;
     cursorY = static_cast<int16_t>(cursorY + itemH + rowGap);
     if (props.hugContents && item.label) {
       // Hug-content rows shrink to the label width plus padding so the
@@ -687,7 +712,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     }
     State state = partial ? static_cast<State>(item.state & ~(StateSelected | StateFocused | StateActive))
                           : item.state;
-    if (!partial && props.selectedIndex == static_cast<int16_t>(i))
+    if (!partial && !props.hideSelection && props.selectedIndex == static_cast<int16_t>(i))
       state |= StateSelected;
     if (!item.enabled)
       state |= StateDisabled;
@@ -757,7 +782,10 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
     const BitmapRef icon =
         item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
-    if (icon) {
+    if (icon && props.iconsInMargin) {
+      drawListMarginIcon(frame.target(), content, sidePad, props, icon,
+                         style.foreground);
+    } else if (icon) {
       const int16_t iconSize = props.iconSize > 0
                                    ? props.iconSize
                                    : static_cast<int16_t>(icon.width);
@@ -867,7 +895,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
                           labelStyle);
     }
 
-    if (!partial && props.selectedIndex == static_cast<int16_t>(i) &&
+    if (!partial && !props.hideSelection && props.selectedIndex == static_cast<int16_t>(i) &&
         props.selectionMarker != SelectionMarker::None) {
       if (props.selectionMarker == SelectionMarker::Underline) {
         // RTL mirrors which edge carries markerInset's extra gap, matching

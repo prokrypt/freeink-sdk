@@ -242,6 +242,9 @@ an SDK-specific page model:
   the shared FreeType library starts. This lets embedded consumers route SDK
   work through a bounded arena without the SDK depending on a particular RTOS,
   PSRAM implementation, or firmware allocator.
+- `FtLibrary` is an independent FreeType library with its own allocator and
+  library-global properties. `FtFont::setLibrary()` binds a font to it, so two
+  tasks can rasterize concurrently as long as each holds its own library's lock.
 
 For example, converting a user-facing point size to pixels remains consumer
 policy: `pixelSize26_6 = points * panelPpi * 64 / 72`. A 10-point request is

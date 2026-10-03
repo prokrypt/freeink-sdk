@@ -51,6 +51,14 @@ public:
     // unchanged, so a caller can keep its last good value. The ADC path always
     // succeeds.
     bool readPercentageChecked(uint16_t& out) const;
+    // Same read in 1/256 % (out = percent * 256 + fraction). Only the CW2017
+    // reports a fraction (its SOC register's low byte); other backends return
+    // whole percents * 256.
+    bool readPercentage256Checked(uint16_t& out) const;
+    // Debug: raw 8-bit register access on the I2C gauge. false without one or
+    // on I2C failure.
+    bool readGaugeReg(uint8_t reg, uint8_t& out) const;
+    bool writeGaugeReg(uint8_t reg, uint8_t value) const;
 
     // Read every battery field the active board can report. `supported` is false
     // when the board profile has no battery telemetry path. Per-field `Known`
@@ -62,6 +70,11 @@ public:
 
     // Read the battery voltage in volts (accounts for divider)
     double readVolts() const;
+
+    // Fuel-gauge temperature in 0.1 C (BQ27220 internal/NTC, CW2017 TS input).
+    // false when the board has no gauge with a temperature register, or on I2C
+    // failure.
+    bool readTemperatureDeciC(int16_t& out) const;
 
     // True when the battery is actively charging. Sources by backend:
     //   * ADC boards: the MCP73832-style charge-status pin (LOW = charging);

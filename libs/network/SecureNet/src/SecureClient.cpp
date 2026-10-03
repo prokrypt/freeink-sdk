@@ -1,5 +1,7 @@
 #include "SecureClient.h"
 
+#include <Logging.h>
+
 // wolfSSL is only pulled in when explicitly enabled. This keeps the default SDK
 // build free of the wolfSSL dependency while leaving a single, well-defined
 // integration point for the TLS 1.3 transport.
@@ -46,6 +48,40 @@ int wcRecv(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   return n;
 }
 
+// One resumable session (TLS 1.3 ticket or TLS 1.2 session ID) for the last
+// host:port. OPDS browsing hits one server again and again; resuming skips
+// the certificate exchange and verify on every request after the first. A
+// connection takes the session out of the slot, so two concurrent connections
+// never share one; the one that closes last puts its session back.
+struct ResumeSlot {
+  WOLFSSL_SESSION* session = nullptr;
+  uint16_t port = 0;
+  char host[64] = {};
+};
+ResumeSlot resumeSlot;
+portMUX_TYPE resumeMux = portMUX_INITIALIZER_UNLOCKED;
+
+WOLFSSL_SESSION* takeResumable(const char* host, const uint16_t port) {
+  WOLFSSL_SESSION* session = nullptr;
+  taskENTER_CRITICAL(&resumeMux);
+  if (resumeSlot.session && resumeSlot.port == port && strcmp(resumeSlot.host, host) == 0) {
+    session = resumeSlot.session;
+    resumeSlot.session = nullptr;
+  }
+  taskEXIT_CRITICAL(&resumeMux);
+  return session;
+}
+
+void putResumable(WOLFSSL_SESSION* session, const char* host, const uint16_t port) {
+  taskENTER_CRITICAL(&resumeMux);
+  WOLFSSL_SESSION* old = resumeSlot.session;
+  resumeSlot.session = session;
+  resumeSlot.port = port;
+  strlcpy(resumeSlot.host, host, sizeof(resumeSlot.host));
+  taskEXIT_CRITICAL(&resumeMux);
+  if (old) wolfSSL_SESSION_free(old);  // outside the critical section: it frees heap
+}
+
 bool isWantIo(const int err) {
   // Only the wolfSSL_get_error() codes. The WOLFSSL_CBIO_ERR_* callback return
   // codes never come out of wolfSSL_get_error and collide with fatal wolfCrypt
@@ -71,7 +107,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   if (abortRequested()) return 0;
   _transport.setConnectionTimeout(timeoutMs);
   if (!_transport.connect(host, port)) {
-    if (Serial) Serial.printf("[SecureClient] TCP connect failed (%s): %s:%u\n", label, host, port);
+    LOG_ERR("TLS", "TCP connect failed (%s): %s:%u", label, host, port);
     return 0;
   }
   if (abortRequested()) {
@@ -81,7 +117,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 
   auto* ctx = wolfSSL_CTX_new(static_cast<WOLFSSL_METHOD*>(method));
   if (!ctx) {
-    if (Serial) Serial.printf("[SecureClient] CTX alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    LOG_ERR("TLS", "CTX alloc failed (%s), free heap %u", label, (unsigned)ESP.getFreeHeap());
     _transport.stop();
     return 0;
   }
@@ -98,7 +134,7 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
 
   auto* ssl = wolfSSL_new(ctx);
   if (!ssl) {
-    if (Serial) Serial.printf("[SecureClient] SSL alloc failed (%s), free heap %u\n", label, (unsigned)ESP.getFreeHeap());
+    LOG_ERR("TLS", "SSL alloc failed (%s), free heap %u", label, (unsigned)ESP.getFreeHeap());
     stop();
     return 0;
   }
@@ -106,6 +142,19 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   wolfSSL_SetIOReadCtx(ssl, &_transport);
   wolfSSL_SetIOWriteCtx(ssl, &_transport);
   wolfSSL_UseSNI(ssl, WOLFSSL_SNI_HOST_NAME, host, strlen(host));
+  const size_t hostLen = strlen(host);
+  if (hostLen < sizeof(_host)) {
+    memcpy(_host, host, hostLen + 1);
+    _port = port;
+    if (WOLFSSL_SESSION* resume = takeResumable(host, port)) {
+      // ssl takes its own reference; a rejected or expired session just means
+      // a full handshake.
+      wolfSSL_set_session(ssl, resume);
+      wolfSSL_SESSION_free(resume);
+    }
+  } else {
+    _host[0] = '\0';
+  }
 #if defined(WOLFSSL_TLS13) && defined(HAVE_CURVE25519)
   // MEMFIX-PORT: pin the TLS 1.3 key_share to X25519. wolfSSL's default is a
   // P-256 share, generated with fast-math bignums that WOLFSSL_SMALL_STACK
@@ -134,30 +183,27 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   while ((ret = wolfSSL_connect(ssl)) != WOLFSSL_SUCCESS) {
     const int err = wolfSSL_get_error(ssl, ret);
     if (!isWantIo(err)) {
-      if (Serial) Serial.printf("[SecureClient] wolfSSL_connect failed (%s): %d\n", label, err);
+      LOG_ERR("TLS", "wolfSSL_connect failed (%s): %d", label, err);
       stop();
       return 0;
     }
     if (abortRequested()) {
-      if (Serial) Serial.printf("[SecureClient] handshake aborted by caller (%s)\n", label);
+      LOG_INF("TLS", "handshake aborted by caller (%s)", label);
       stop();
       return 0;
     }
     if (static_cast<int32_t>(millis() - deadline) >= 0) {
-      if (Serial) {
-        Serial.printf("[SecureClient] handshake timeout (%s): last err %d, transport %s, free heap %u\n", label, err,
-                      _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
-      }
+      LOG_ERR("TLS", "handshake timeout (%s): last err %d, transport %s, free heap %u", label, err,
+              _transport.connected() ? "up" : "down", (unsigned)ESP.getFreeHeap());
       stop();
       return 0;
     }
     delay(5);
   }
   _connected = true;
-  if (Serial) {
-    Serial.printf("[SecureClient] handshake ok (%s): %s / %s in %lu ms\n", label, wolfSSL_get_version(ssl),
-                  wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started));
-  }
+  _handshakeOk = true;
+  LOG_DBG("TLS", "Handshake ok (%s): %s / %s in %lu ms resumed=%d", label, wolfSSL_get_version(ssl),
+          wolfSSL_get_cipher(ssl), (unsigned long)(millis() - started), wolfSSL_session_reused(ssl));
   return 1;
 }
 
@@ -169,6 +215,7 @@ bool SecureClient::abortRequested() {
 
 int SecureClient::connect(const char* host, uint16_t port) {
   _aborted = false;
+  _readFailed = false;
   // Negotiate the highest mutually supported version rather than pinning TLS 1.3:
   // self-hosted / Let's Encrypt nginx often tops out at TLS 1.2, and a 1.3-only
   // client fails those handshakes outright. v23 still selects 1.3 when the peer
@@ -179,7 +226,7 @@ int SecureClient::connect(const char* host, uint16_t port) {
   // Some TLS 1.2-only servers are intolerant of a TLS 1.3-capable ClientHello
   // and abort with a fatal handshake_failure alert. Retry with an explicit
   // TLS 1.2 ClientHello before giving up.
-  if (Serial) Serial.println("[SecureClient] retrying with TLS 1.2-only handshake");
+  LOG_INF("TLS", "retrying with TLS 1.2-only handshake");
   return connectWithMethod(host, port, wolfTLSv1_2_client_method(), "tls1.2");
 }
 
@@ -203,18 +250,20 @@ int SecureClient::read(uint8_t* buf, size_t size) {
 
   const int err = wolfSSL_get_error(ssl, n);
   if (isWantIo(err)) return 0;
-  if (err == WOLFSSL_ERROR_ZERO_RETURN) {
+  // wolfSSL_read returns 0 for close_notify and for the transport closing
+  // under us: both are how a close-delimited body ends, so neither counts as
+  // a failed read.
+  if (n == 0 || err == WOLFSSL_ERROR_ZERO_RETURN) {
     _connected = false;
     return 0;
   }
   // A mid-stream failure is invisible to callers (they just see the connection
   // die); the error code distinguishes an OOM (MEMORY_E -125) from a peer
   // drop or MAC failure.
-  if (Serial) {
-    Serial.printf("[SecureClient] read failed: %d, free heap %u, max block %u\n", err, (unsigned)ESP.getFreeHeap(),
-                  (unsigned)ESP.getMaxAllocHeap());
-  }
+  LOG_ERR("TLS", "read failed: %d, free heap %u, max block %u", err, (unsigned)ESP.getFreeHeap(),
+          (unsigned)ESP.getMaxAllocHeap());
   _connected = false;
+  _readFailed = true;
   return -1;
 }
 
@@ -224,6 +273,17 @@ int SecureClient::available() {
 }
 
 void SecureClient::stop() {
+  if (_ssl && _handshakeOk && !_readFailed && _host[0] != '\0') {
+    // Taken at close so a TLS 1.3 ticket that arrived after the handshake is in it.
+    auto* ssl = static_cast<WOLFSSL*>(_ssl);
+    WOLFSSL_SESSION* session = wolfSSL_get1_session(ssl);
+    if (session && wolfSSL_SessionIsSetup(session)) {
+      putResumable(session, _host, _port);
+    } else if (session) {
+      wolfSSL_SESSION_free(session);
+    }
+  }
+  _handshakeOk = false;
   if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
   if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
   _transport.stop();
@@ -236,7 +296,7 @@ uint8_t SecureClient::connected() { return _connected && _transport.connected();
 
 int SecureClient::connect(const char* host, uint16_t port) {
   (void)host; (void)port;
-  if (Serial) Serial.println("[SecureClient] TLS 1.3 unavailable: build with -DFREEINK_NET_WOLFSSL=1");
+  LOG_ERR("TLS", "TLS 1.3 unavailable: build with -DFREEINK_NET_WOLFSSL=1");
   return 0;
 }
 int SecureClient::connect(IPAddress ip, uint16_t port) { (void)ip; (void)port; return 0; }

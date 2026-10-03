@@ -5,6 +5,7 @@
 #include "MultiTouchGestureMath.h"
 
 #if FREEINK_CAP_TOUCH
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>
 #if FREEINK_DEVICE_MURPHY_M4
@@ -219,6 +220,7 @@ uint8_t InputManager::getState() {
 }
 
 InputManager::ButtonHook InputManager::s_buttonHook = nullptr;
+InputManager::TouchHook InputManager::s_touchHook = nullptr;
 
 void InputManager::beginAsync(const uint8_t taskPriority, const uint32_t pollMs, const uint8_t queueLen) {
   if (_asyncTask) return;  // already running
@@ -513,9 +515,13 @@ void InputManager::updateDigitalTwoButton(const unsigned long currentTime) {
   if (pressedEvents & (1u << BTN_POWER)) powerButtonPressStart = twoButtonPressStart;
 }
 
-void InputManager::update() {
-  const unsigned long currentTime = millis();
+bool InputManager::hasOneShotEvents() const {
+  return pressedEvents != 0 || releasedEvents != 0 || touchPressedEvent || touchReleasedEvent || touchLongPressEvent ||
+         multiTouchSwipeEvent || multiTouchRotationEvent || multiTouchPinchEvent || touchHomeKeyEvent ||
+         touchHomeKeyTapEvent || touchHomeKeyLongEvent;
+}
 
+void InputManager::clearOneShotEvents() {
   pressedEvents = 0;
   releasedEvents = 0;
   touchPressedEvent = false;  // one-shot touch coord events, cleared each update()
@@ -527,6 +533,12 @@ void InputManager::update() {
   touchHomeKeyEvent = false;
   touchHomeKeyTapEvent = false;
   touchHomeKeyLongEvent = false;
+}
+
+void InputManager::update() {
+  const unsigned long currentTime = millis();
+
+  clearOneShotEvents();
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -598,6 +610,25 @@ const char* InputManager::getButtonName(const uint8_t buttonIndex) {
 }
 
 bool InputManager::s_sharedConfirmPowerShortPressEmitsPower = false;
+
+#if FREEINK_TUNING
+void InputManager::setTuning(const Tuning& t) {
+  HOME_KEY_LONG_PRESS_MS = t.homeKeyLongPressMs;
+  CONFIRM_BACK_HOLD_MS = t.confirmBackHoldMs;
+  CONFIRM_POWER_HOLD_MS = t.confirmPowerHoldMs;
+  TWO_BUTTON_HOLD_MS = t.twoButtonHoldMs;
+  TOUCH_IRQ_PULSE_MS = t.touchIrqPulseMs;
+  TOUCH_SWIPE_MIN_PX = t.touchSwipeMinPx > 8 ? t.touchSwipeMinPx : 60;
+  // A tap must stay a tap until it could be a swipe.
+  TOUCH_TAP_SLOP_PX = t.touchTapSlopPx > 0 && t.touchTapSlopPx < TOUCH_SWIPE_MIN_PX ? t.touchTapSlopPx : 28;
+  TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  TOUCH_SWIPE_MAX_MS = t.touchSwipeMaxMs;
+  TOUCH_MULTI_SWIPE_MAX_MS = t.touchMultiSwipeMaxMs;
+  TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = t.touchMultiSeparationSlopPx;
+  TOUCH_LONG_PRESS_MS = t.touchLongPressMs;
+  TOUCH_CONTACT_JUMP_PX = t.touchContactJumpPx;
+}
+#endif
 
 bool InputManager::isPowerButtonPressed() const { return isPressed(BTN_POWER); }
 
@@ -1250,7 +1281,7 @@ void InputManager::beginTouch() {
 
 uint8_t InputManager::serviceTouch() {
 #if FREEINK_CAP_TOUCH
-  if (!touchDataEnabled) {
+  if (!touchDataEnabled || touchAsleep) {
     return 0;
   }
   const unsigned long now = millis();
@@ -1266,7 +1297,9 @@ uint8_t InputManager::serviceTouch() {
     resetMultiTouchGesture();
   }
 
-  if (t.controller == BoardConfig::TouchController::Gt911) {
+  if (pollTouchHook(now)) {
+    // Injected contact replaced the controller read for this sample.
+  } else if (t.controller == BoardConfig::TouchController::Gt911) {
     pollGt911(now);
   } else if (t.controller == BoardConfig::TouchController::Ft5x06) {
     pollFt5x06(now);
@@ -1340,6 +1373,7 @@ void InputManager::updateTouchFromIrq(const unsigned long now, const int irqRaw)
 }
 
 bool InputManager::readChsc6xPoint(TouchPoint& point) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(TOUCH_READ_COMMAND);
@@ -1398,6 +1432,7 @@ uint16_t InputManager::mapTouchAxis(uint16_t raw, const uint16_t rawMin, const u
 // --- FT5x06 / FT6336 (M5Stack Paper Mono) ----------------------------------
 
 bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1406,6 +1441,7 @@ bool InputManager::ft5x06WriteReg(const uint8_t reg, const uint8_t value) {
 }
 
 bool InputManager::ft5x06ReadReg(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1575,6 +1611,7 @@ void InputManager::pollFt5x06(const unsigned long now) {
 // the stock firmware; the firmware blob (gsl/EegoA4GslFirmware.h) is byte-verified.
 
 bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1583,6 +1620,7 @@ bool InputManager::gslWrite(const uint8_t reg, const uint8_t* data, const uint8_
 }
 
 bool InputManager::gslRead(const uint8_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
   Wire.beginTransmission(addr);
   Wire.write(reg);
@@ -1847,7 +1885,60 @@ void InputManager::beginGt911() {
 #endif
 }
 
+bool InputManager::setTouchSleep(const bool asleep) {
+  const auto& t = BoardConfig::ACTIVE.touch;
+  if (t.controller != BoardConfig::TouchController::Gt911 || gt911Addr == 0 || t.irq < 0) return false;
+  if (asleep == touchAsleep) return true;
+
+  if (asleep) {
+    if (touchPressed || touchHomeKeyDown) return false;
+    // GT9xx sleep entry, as in the Linux goodix driver: hold INT low, send the
+    // screen-off command (0x05 to 0x8040), then give the controller ~58 ms to
+    // settle. INT stays driven low while it sleeps.
+    pinMode(t.irq, OUTPUT);
+    digitalWrite(t.irq, LOW);
+    delay(5);
+    bool sent;
+    {
+      freeink::I2cBusLock bus;
+      Wire.beginTransmission(gt911Addr);
+      Wire.write(0x80);
+      Wire.write(0x40);
+      Wire.write(static_cast<uint8_t>(0x05));
+      sent = Wire.endTransmission() == 0;
+    }
+    if (!sent) {
+      pinMode(t.irq, INPUT);
+      return false;
+    }
+    delay(58);
+    touchAsleep = true;
+    return true;
+  }
+
+  // Wake: INT high for 2-5 ms, then the INT sync the goodix driver runs before
+  // handing the line back (low for 50 ms, then input). The address strap is
+  // only latched on reset, so this cannot move the controller's address.
+  digitalWrite(t.irq, HIGH);
+  delay(5);
+  digitalWrite(t.irq, LOW);
+  delay(50);
+  pinMode(t.irq, INPUT);
+  touchAsleep = false;
+  uint8_t status = 0;
+  if (!gt911ReadReg(0x814E, &status, 1)) {
+    // No answer to the wake pulse: fall back to the full reset and probe.
+    beginGt911();
+    return touchDataEnabled;
+  }
+  // Drop any frame latched before or during sleep so it cannot surface as a
+  // stale touch.
+  gt911ClearStatus();
+  return true;
+}
+
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(gt911Addr);
   Wire.write(static_cast<uint8_t>(reg >> 8));
   Wire.write(static_cast<uint8_t>(reg & 0xFF));
@@ -1866,6 +1957,7 @@ bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t 
 }
 
 void InputManager::gt911ClearStatus() {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(gt911Addr);
   Wire.write(0x81);
   Wire.write(0x4E);
@@ -2028,6 +2120,7 @@ void InputManager::pollFt6336u(const unsigned long now) {
   }
 #else
   const uint8_t addr = BoardConfig::ACTIVE.touch.i2cAddress;
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(static_cast<uint8_t>(0x00));
   if (Wire.endTransmission(false) == 0) {
@@ -2116,6 +2209,57 @@ void InputManager::pollFt6336u(const unsigned long now) {
   }
 }
 
+bool InputManager::pollTouchHook(const unsigned long now) {
+  float nx = 0.0f;
+  float ny = 0.0f;
+  bool down = false;
+  if (s_touchHook == nullptr || !s_touchHook(nx, ny, down)) return false;
+  if (!down) {
+    touchSnapshot.count = 0;
+    touchSnapshot.reportedCount = 0;
+    touchSnapshot.idsStable = true;
+    updateMultiTouchGesture(touchSnapshot, now);
+    if (touchPressed) {
+      touchReleasedEvent = true;
+      lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+      touchUpPoint = touchPoint;
+    }
+    touchPressed = false;
+    touchPoint.valid = false;
+    return true;
+  }
+  const auto& t = BoardConfig::ACTIVE.touch;
+  const auto clamp01 = [](const float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  const float w = (t.rawMaxX > t.rawMinX) ? static_cast<float>(t.rawMaxX - t.rawMinX) : 1.0f;
+  const float h = (t.rawMaxY > t.rawMinY) ? static_cast<float>(t.rawMaxY - t.rawMinY) : 1.0f;
+  touchSnapshot.reportedCount = 1;
+  touchSnapshot.idsStable = true;
+  touchSnapshot.count = 1;
+  touchSnapshot.points[0].id = 0;
+  TouchPoint& point = touchSnapshot.points[0].point;
+  point.valid = true;
+  point.x = static_cast<uint16_t>(clamp01(nx) * w);
+  point.y = static_cast<uint16_t>(clamp01(ny) * h);
+  point.timestamp = now;
+  updateMultiTouchGesture(touchSnapshot, now);
+  touchPoint = point;
+  if (!touchPressed) {
+    touchPressedEvent = true;
+    touchDownPoint = touchPoint;
+    touchMovedBeyondTapSlop = false;
+    touchMovedBeyondTapReleaseSlop = false;
+  }
+  touchUpPoint = touchPoint;
+  const int dx = static_cast<int>(touchUpPoint.x) - static_cast<int>(touchDownPoint.x);
+  const int dy = static_cast<int>(touchUpPoint.y) - static_cast<int>(touchDownPoint.y);
+  if (absInt(dx) > TOUCH_TAP_SLOP_PX || absInt(dy) > TOUCH_TAP_SLOP_PX) touchMovedBeyondTapSlop = true;
+  if (absInt(dx) > TOUCH_TAP_RELEASE_SLOP_PX || absInt(dy) > TOUCH_TAP_RELEASE_SLOP_PX) {
+    touchMovedBeyondTapReleaseSlop = true;
+  }
+  touchPressed = true;
+  return true;
+}
+
 void InputManager::pollGt911(const unsigned long now) {
   if (gt911Addr == 0) {
     return;
@@ -2196,6 +2340,29 @@ void InputManager::pollGt911(const unsigned long now) {
       // the active sequence through transient I2C failures.
       updateMultiTouchGesture(touchSnapshot, now);
 
+      // Overlapping taps (two thumbs): the first finger lifts while the next is
+      // down, and the primary record jumps to the new finger with no zero-contact
+      // frame between. Without track ids that read as one contact moving key to
+      // key, i.e. a swipe (log 20261001T050734Z-32cc8fdd #349/#421: swipe right
+      // from one key to the next). A jump no finger makes in one frame ends the
+      // old contact here (tap or release); the next frame starts a new one.
+      // Only a still contact (a tap) can jump: a moving swipe is never split, even
+      // if a slow poll makes it cover more than the jump in one read.
+      // ponytail: assumes the GT911 keeps reporting while the new finger is down.
+      if (touchPressed && !touchMovedBeyondTapSlop) {
+        const TouchPoint& next = touchSnapshot.points[0].point;
+        const int jx = static_cast<int>(next.x) - static_cast<int>(touchPoint.x);
+        const int jy = static_cast<int>(next.y) - static_cast<int>(touchPoint.y);
+        if (absInt(jx) > TOUCH_CONTACT_JUMP_PX || absInt(jy) > TOUCH_CONTACT_JUMP_PX) {
+          touchReleasedEvent = true;
+          lastTouchHeldDurationMs = now - touchDownPoint.timestamp;
+          touchUpPoint = touchPoint;
+          touchPressed = false;
+          gt911ClearStatus();
+          return;
+        }
+      }
+
       // Preserve the existing single-touch API from the first contact.
       touchPoint = touchSnapshot.points[0].point;
       if (!touchPressed) {
@@ -2247,5 +2414,9 @@ void InputManager::pollGt911(const unsigned long now) {
 
   gt911ClearStatus();  // GT911 requires clearing 0x814E after each read
 }
+
+#else
+
+bool InputManager::setTouchSleep(bool) { return false; }
 
 #endif  // FREEINK_CAP_TOUCH

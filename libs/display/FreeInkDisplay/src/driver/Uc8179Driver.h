@@ -16,6 +16,9 @@
 // BUSY_N: low while busy (PON/DRF/POF all flag). Production waits one RTOS tick
 // and then polls until BUSY_N is HIGH; it does not require observing a LOW edge.
 
+#include <climits>
+#include <BoardConfig.h>  // FREEINK_UC8179_PANEL_TEMP
+
 #include "PanelDriver.h"
 
 namespace freeink {
@@ -66,6 +69,8 @@ class Uc8179Driver : public PanelDriver {
 
   void begin(EpdBus& bus) override;
   void deepSleep(EpdBus& bus) override;
+  bool powerOffIdle(EpdBus& bus) override;
+  bool powerOnIdle(EpdBus& bus) override;
 
   void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
   bool displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) override;
@@ -74,26 +79,27 @@ class Uc8179Driver : public PanelDriver {
 
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
+  bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
+  bool grayOnPanel() const override { return _directGrayOnPanel; }
+  void setSmoothGray(bool smooth) override { _smoothGray = smooth; }
+  // Dark mode: overlay gray folds its planes in panel polarity and runs the
+  // mirrored hold and held re-drive sets (Sharp keeps the stock set).
+  void setBackgroundHint(bool darkBackground) override { _darkBackground = darkBackground; }
+  bool supportsInvertedOverlayGray() const override { return true; }
 
   // --- 4-level grayscale (anti-aliasing) ---
   // CrossPoint supplies two full 1bpp overlay masks. The driver combines them
   // with the displayed B/W base to recover Factory.bin's absolute 2-bit planes,
   // then sends plane0 -> DTM 0x10 and plane1 -> DTM 0x13. Full-buffer path only
   // (supportsStripGrayscale stays false; conversion needs the complete base).
-  void displayGrayscaleBase(EpdBus &bus, const uint8_t *fb,
-                                  RefreshMode fallback, bool turnOff) override;
-  void preconditionGrayscale(EpdBus &bus, uint16_t x, uint16_t y, uint16_t w,
-                             uint16_t h) override;
-  GrayscaleCapabilities grayscaleCapabilities(
-      GrayscaleMode mode = GrayscaleMode::Overlay) const override {
+  void displayGrayscaleBase(EpdBus& bus, const uint8_t* fb, RefreshMode fallback, bool turnOff) override;
+  void preconditionGrayscale(EpdBus& bus, uint16_t x, uint16_t y, uint16_t w, uint16_t h) override;
+  GrayscaleCapabilities grayscaleCapabilities(GrayscaleMode mode = GrayscaleMode::Overlay) const override {
     if (mode == GrayscaleMode::Absolute || mode == GrayscaleMode::Direct)
       return {GrayscaleEncoding::AbsolutePlanes,
-              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate,
-              false, false, false};
-    if (mode != GrayscaleMode::Overlay)
-      return {};
-    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false,
-            false, false};
+              mode == GrayscaleMode::Direct ? GrayscaleBase::Combined : GrayscaleBase::Separate, false, false, false};
+    if (mode != GrayscaleMode::Overlay) return {};
+    return {GrayscaleEncoding::OverlayMasks, GrayscaleBase::Separate, false, false, false};
   }
   void beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode mode, RefreshMode fallback, bool turnOff) override;
   // Starts the XTF_PRE_BW_MID base transition (or the B/W fallback) and returns
@@ -109,8 +115,13 @@ class Uc8179Driver : public PanelDriver {
  private:
   void initController(EpdBus& bus);
   void startBwRefresh(EpdBus& bus, bool fast);
-  void configureDirectGrayscale(EpdBus &bus);
-  void restoreBwConfiguration(EpdBus &bus);
+  // Frame a B/W refresh's full-screen swing starts at (< 0: none). displayStart
+  // plans the flash with it before any panel work; startBwRefresh times DRF.
+  int bwSwingFrame(bool fast, bool expLut, bool complement, bool selective, bool nullLut, uint8_t scrubFrames) const;
+  // A gray pass holds black/white pixels (Softfast over its B/W base): no swing.
+  bool grayPassHolds(bool overlayPlanes) const;
+  void configureDirectGrayscale(EpdBus& bus);
+  void restoreBwConfiguration(EpdBus& bus);
   // Stream a framebuffer into a RAM plane (ramCmd): reverse row order, use PSR
   // SHL for horizontal panel direction, then pad to the addressed gate count.
   // Used for both NEW plane (0x13) and OLD-plane sync (0x10).
@@ -118,31 +129,28 @@ class Uc8179Driver : public PanelDriver {
   // Stream lhs XOR rhs with the same orientation and white gate padding. Used
   // to translate CrossPoint's MSB transition mask into stock absolute plane1.
   void streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lhs, const uint8_t* rhs);
-  // Run the vendor XTF_PRE_BW_MID transition with the previous B/W base in
-  // DTM1 and the new base in DTM2. It replaces the ordinary B/W activation and
-  // leaves analog power on for the AA pass that follows.
-  void runGrayscalePrecondition(EpdBus& bus);
-  // Split halves of runGrayscalePrecondition(): start returns false when the
-  // pre-pass is skipped (first AA page / no baseline); finish rides out BUSY.
-  bool startGrayscalePrecondition(EpdBus& bus);
-  void finishGrayscalePrecondition(EpdBus& bus);
-  // Blocking, non-flashing B/W transition used by a Fast page immediately
-  // after AA. The generic reader path does not call displayGrayscaleBase(), so
-  // display() routes its post-AA Fast base here as well.
-  void transitionGrayscaleBase(EpdBus& bus, const uint8_t* fb, bool turnOff);
-  bool transitionGrayscaleBaseStart(EpdBus& bus, const uint8_t* fb);
-  void transitionGrayscaleBaseFinish(EpdBus& bus, const uint8_t* fb, bool turnOff, bool preconditionRunning,
-                                     bool deferOldPlane);
+  // Debug log: SPI time spent streaming planes since the last DRF, printed as
+  // each refresh starts so a refresh splits into SPI upload vs waveform.
+  void logSpiBeforeDrf(const char* kind);
+#if FREEINK_UC8179_PANEL_TEMP
+  // periodMs: minimum age of the last sample before another is taken.
+  void samplePanelTemperature(EpdBus& bus, unsigned long periodMs);
+#endif
   // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
   // it stale. Every entry point that relies on DTM1 calls this first.
   void syncStaleOldPlane(EpdBus& bus);
+  void readOtpVcom(EpdBus& bus);
+  bool loadOtpVcomCache(const uint8_t* tb);
+  void saveOtpVcomCache() const;
+  uint8_t vcomDc(int forcedC = INT_MIN);
+  bool skipBaseOverDirectGray(const uint8_t* fb, RefreshMode fallback);
 
   const Uc8179Config& _cfg;
 
-  uint16_t _w;        // visible width (800)
-  uint16_t _h;        // visible height (480)
-  uint16_t _wb;       // width in bytes (100)
-  uint16_t _tresH;    // addressed gate count (600) — DTM padded to this
+  uint16_t _w;      // visible width (800)
+  uint16_t _h;      // visible height (480)
+  uint16_t _wb;     // width in bytes (100)
+  uint16_t _tresH;  // addressed gate count (600) — DTM padded to this
   uint32_t _bufferSize;
 
   // Stock Factory.bin uses absolute AA planes and derives its B/W base as
@@ -153,14 +161,34 @@ class Uc8179Driver : public PanelDriver {
   // then copyGrayscaleMsb() recovers the clean B/W base for stock's RAM restore.
   uint8_t* _grayBase = nullptr;
   bool _grayBaseValid = false;
+  // Gray pixels (1 = light/dark) of the last overlay-path gray page, PSRAM.
+  // With _grayBase it gives the panel's true state for the selective exit paint.
+  uint8_t* _grayMask = nullptr;
+  bool _panelGrayValid = false;  // _grayBase + _grayMask describe what the panel shows
+  uint8_t _otpTb[11] = {};    // OTP temperature boundaries (readOtpVcom)
+  uint8_t _otpVcom[12] = {};  // OTP VCOM_DC per temperature range
+  uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
+  uint8_t _vcomTrLogged = 0xFF;  // TR whose VCOM was last logged (0xFE: fallback)
+  bool _paintForGrayBase = false;  // exit paint runs as a gray page's base (shorter)
+  bool _nullLut = false;  // this refresh runs makeNullLuts (requestUc8179NullNext)
+  bool _smoothGray = false;     // setSmoothGray(): hold set when the B/W base is shown
+  bool _darkBackground = false;  // setBackgroundHint(): frames arrive inverted (dark mode)
+  bool _bwBaseShown = false;     // the last B/W refresh showed the base the gray planes come from
   bool _absoluteGrayPlanes = false;
   bool _absoluteInput = false;
   bool _directGrayPass = false;
   bool _directGrayOnPanel = false;
   bool _directGrayConfigured = false;
   uint8_t _directGrayPlanes = 0;
+  uint32_t _spiUs = 0;
+  uint8_t _spiPlanes = 0;
 
   bool _isScreenOn = false;
+  // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).
+  uint8_t _scrubLutFrames = 0;
+  bool _complementOldPlane = false;  // this refresh's DTM1 is the target's complement (DU scrub)
+  bool _selectivePaint = false;      // ...except B/W pixels, which keep their true OLD
+  bool _holdBwPass = false;          // this direct gray pass runs the hold set (smooth gray)
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
   bool _needFullClear = true;
@@ -170,21 +198,11 @@ class Uc8179Driver : public PanelDriver {
   // True when both controller planes have been restored to the displayed B/W
   // base. False while an ordinary refresh or AA selector upload is in flight.
   bool _bwPlanesSynced = false;
-  // Set after every grayscale refresh. The next ordinary Fast B/W paint uses
-  // stock's non-flashing XTF_PRE_BW_MID transition instead of DU. Explicit Half
-  // remains the complement-driven GC scrub for periodic and sleep cleanup.
-  bool _redriveAfterGray = false;
-  // Tracks whether the first AA page has completed; Factory.bin skips the
-  // XTF_PRE_BW_MID pre-pass only for that first page. AA activation itself uses
-  // CDI 0x29 every time; 0xA9 is restored only after B/W/preconditioning passes.
-  bool _grayRefreshedOnce = false;
 
   // Async split state (see Uc8279Driver for the contract).
   bool _pendingRefresh = false;
   bool _pendingTurnOff = false;
   bool _pendingPartial = false;  // this refresh used the PTIN/PTOUT partial path
-  bool _pendingGrayBase = false;  // the pending refresh is a deferred AA base transition
-  bool _pendingGrayPre = false;   // ...and its XTF_PRE_BW_MID waveform is running
   // A deferred base finished without re-sending DTM1: the AA LSB upload that
   // normally follows overwrites it immediately. DTM1 still holds the previous
   // page until syncStaleOldPlane() or that upload runs.

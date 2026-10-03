@@ -16,8 +16,35 @@
 
 #include <cstdint>
 
+// FREEINK_TUNING (debug builds): the timing and slop constants marked
+// INPUT_TUNABLE are settable through InputManager::setTuning().
+#if FREEINK_TUNING
+#define INPUT_TUNABLE static inline
+#else
+#define INPUT_TUNABLE static constexpr
+#endif
+
 class InputManager {
  public:
+#if FREEINK_TUNING
+  struct Tuning {
+    unsigned long homeKeyLongPressMs = 700;
+    unsigned long confirmBackHoldMs = 650;
+    unsigned long confirmPowerHoldMs = 400;
+    unsigned long twoButtonHoldMs = 650;
+    unsigned long touchIrqPulseMs = 120;
+    int touchTapSlopPx = 28;
+    int touchSwipeMinPx = 60;  // tap-on-release slop follows at one less
+    unsigned long touchSwipeMaxMs = 700;
+    unsigned long touchMultiSwipeMaxMs = 2000;
+    int touchMultiSeparationSlopPx = 45;
+    unsigned long touchLongPressMs = 500;
+    int touchContactJumpPx = 120;
+  };
+  // Main task. Swipe min > 8 px and tap slop below it, else defaults; tap-on-release
+  // slop stays swipe min - 1. Other values are the caller's (app knob ranges).
+  static void setTuning(const Tuning& t);
+#endif
   InputManager();
   void begin();
   uint8_t getState();
@@ -51,6 +78,14 @@ class InputManager {
   // otherwise a press shorter than the poll period lands in a single sample and
   // is dropped.
   bool isDebouncePending() const { return lastState != currentState; }
+
+  // True when the last update() produced a one-shot event: a button press or
+  // release edge, a touch press/release/long press, a multi-touch gesture or a
+  // Home key edge. Taps and swipes derive from the touch release edge.
+  bool hasOneShotEvents() const;
+  // Clears the one-shot events of the last update() and keeps held state, so a
+  // copy of this object can stand for "nothing new since".
+  void clearOneShotEvents();
 
   // Duration between the first button press and final release.
   unsigned long getHeldTime() const;
@@ -107,6 +142,13 @@ class InputManager {
 
   // True if this board has a touch controller configured.
   bool hasTouch() const;
+  // Puts a GT911 into its sleep mode, where it stops scanning, or wakes it.
+  // While asleep the controller is not polled, so neither touches nor its
+  // capacitive Home key are reported. Sleep is refused while a contact or the
+  // Home key is down. Returns true once the controller is in the requested
+  // state; false on boards without a GT911 or when it did not respond.
+  bool setTouchSleep(bool asleep);
+  bool isTouchAsleep() const { return touchAsleep; }
   // True only while a GT911 controller is present. Other touch controllers
   // retain their existing single-contact contract.
   bool supportsMultiTouch() const;
@@ -200,6 +242,14 @@ class InputManager {
   using ButtonHook = uint8_t (*)();
   static void setButtonHook(ButtonHook hook) { s_buttonHook = hook; }
 
+  // Optional test/remote-control hook for touch. While it returns true the
+  // touch controller is not read; the contact it reports (panel-native frame,
+  // normalized 0..1; down == false for no contact) runs through the same tap,
+  // swipe and long-press machinery as a real finger. Called from whichever task
+  // samples input, so the hook must be thread-safe. Default: none.
+  using TouchHook = bool (*)(float& nx, float& ny, bool& down);
+  static void setTouchHook(TouchHook hook) { s_touchHook = hook; }
+
   // Boards such as Sticky wire OK/confirm and power/wake to the same GPIO. By
   // default a short click emits CONFIRM and a hold emits POWER. Apps that
   // expose a "short power click sleeps" option can flip short clicks to POWER.
@@ -272,6 +322,7 @@ class InputManager {
 
  private:
   static ButtonHook s_buttonHook;
+  static TouchHook s_touchHook;
 
   QueueHandle_t _asyncQueue = nullptr;
   QueueHandle_t _asyncTapQueue = nullptr;
@@ -319,6 +370,7 @@ class InputManager {
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw);  // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);    // GT911 polled read
+  bool pollTouchHook(unsigned long now);  // injected contact from s_touchHook
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);
@@ -381,6 +433,7 @@ class InputManager {
   bool twoButtonLongPressActive;
 
   bool touchDataEnabled = false;         // I2C up, controller present
+  bool touchAsleep = false;              // GT911 sent to sleep by setTouchSleep()
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll
@@ -395,7 +448,7 @@ class InputManager {
   bool touchHomeKeyLongFired = false;  // latched for the current hold so long
                                        // fires once and suppresses the tap
   unsigned long touchHomeKeyDownAt = 0;
-  static constexpr unsigned long HOME_KEY_LONG_PRESS_MS = 700;
+  INPUT_TUNABLE unsigned long HOME_KEY_LONG_PRESS_MS = 700;
   TouchPoint touchPoint = {false, 0, 0, 0};
   TouchSnapshot touchSnapshot{};
   MultiTouchGestureState multiTouchGestureState = MultiTouchGestureState::Idle;
@@ -439,22 +492,25 @@ class InputManager {
 
   static constexpr int ADC_NO_BUTTON = 3900;
   static constexpr unsigned long DEBOUNCE_DELAY = 5;
-  static constexpr unsigned long CONFIRM_BACK_HOLD_MS = 650;
-  static constexpr unsigned long CONFIRM_POWER_HOLD_MS = 400;
-  static constexpr unsigned long TWO_BUTTON_HOLD_MS = 650;
+  INPUT_TUNABLE unsigned long CONFIRM_BACK_HOLD_MS = 650;
+  INPUT_TUNABLE unsigned long CONFIRM_POWER_HOLD_MS = 400;
+  INPUT_TUNABLE unsigned long TWO_BUTTON_HOLD_MS = 650;
 
   // Touch timing / protocol constants (ported from the Murphy M3 CHSC6x
   // driver).
-  static constexpr unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
+  INPUT_TUNABLE unsigned long TOUCH_IRQ_PULSE_MS = 120;   // release hold-over after last valid read
   static constexpr unsigned long TOUCH_SAMPLE_DELAY_MS = 8;  // I2C poll cadence
-  static constexpr int TOUCH_TAP_SLOP_PX = 28;
-  static constexpr int TOUCH_SWIPE_MIN_PX = 60;
-  static constexpr int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
-  static constexpr unsigned long TOUCH_SWIPE_MAX_MS = 700;
-  static constexpr unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
-  static constexpr int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
+  INPUT_TUNABLE int TOUCH_TAP_SLOP_PX = 28;
+  INPUT_TUNABLE int TOUCH_SWIPE_MIN_PX = 60;
+  INPUT_TUNABLE int TOUCH_TAP_RELEASE_SLOP_PX = TOUCH_SWIPE_MIN_PX - 1;
+  // Primary-contact jump in one controller frame (panel px) that means a different
+  // finger, not motion: a fast flick moves well under this per frame.
+  INPUT_TUNABLE int TOUCH_CONTACT_JUMP_PX = 120;
+  INPUT_TUNABLE unsigned long TOUCH_SWIPE_MAX_MS = 700;
+  INPUT_TUNABLE unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
+  INPUT_TUNABLE int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
   static constexpr int64_t TOUCH_CONTACT_ASSIGNMENT_AMBIGUITY_PX_SQ = 64;
-  static constexpr unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
+  INPUT_TUNABLE unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
                                                              // no button travel to absorb
   static constexpr uint8_t TOUCH_READ_COMMAND = 0x00;
   static constexpr uint8_t TOUCH_FRAME_SIZE = 16;

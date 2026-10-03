@@ -109,6 +109,10 @@ class FreeInkDisplay {
   void setInverted(bool inverted);
   bool toggleInverted();
   bool isInverted() const { return _inverted; }
+  // Opt-in for overlay gray (text AA) while inverted, on drivers that fold it
+  // in panel polarity (PanelDriver::supportsInvertedOverlayGray). Off: every
+  // gray step is dropped while inverted, as before. Absolute/Direct stay off.
+  void setInvertedTextGray(bool enabled) { _invertedTextGray = enabled; }
 #ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
   void swapBuffers();
 #endif
@@ -279,6 +283,12 @@ class FreeInkDisplay {
   // Hint the X3 policy to run a one-shot full resync on next update.
   void requestResync(uint8_t settlePasses = 0);
   void skipInitialResync();
+  // See PanelDriver::seedDisplayedFrame. Call after begin().
+  bool seedDisplayedFrame(const uint8_t* frame);
+  // See PanelDriver::grayOnPanel. A frame retained for seeding is invalid while true.
+  bool grayOnPanel() const;
+  // See PanelDriver::setSmoothGray.
+  void setSmoothGray(bool smooth);
   void beginDisplayWork();
   void abortPostRefresh();
   bool postRefreshAborted() const;
@@ -298,6 +308,13 @@ class FreeInkDisplay {
 
   // Power management
   void deepSleep();
+  // Booster off between refreshes (panel keeps its image). Skipped while a
+  // refresh or grayscale pass is pending; true when the panel switched off.
+  bool powerOffIdle();
+  // Booster on ahead of a refresh (e.g. on touch-down) so the next refresh
+  // skips its power-on wait. Skipped while a refresh or grayscale pass is
+  // pending; true when the panel switched on.
+  bool powerOnIdle();
 
   // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
   // firmware can apply its own power policy (e.g. reduce the CPU clock) for the
@@ -479,6 +496,10 @@ class FreeInkDisplay {
   bool _fastGrayscaleLut = false;
   bool _inverted = false;
   bool _inversionDirty = false;
+  bool _invertedTextGray = false;
+  bool _pendingInverted = false;  // the pending refresh got an inverted frame: finish it inverted too
+  // True while inverted and overlay gray can't run inverted (see setInvertedTextGray).
+  bool invertedGrayBlocked() const;
 
   // Runtime display geometry (seeded from the driver at begin()).
   uint16_t displayWidth = DISPLAY_WIDTH;
@@ -498,5 +519,80 @@ class FreeInkDisplay {
   uint8_t* frameBufferActive = nullptr;
 #endif
 };
+
+// EXPERIMENT (test/kbd-uc8179, plan item 20): UC8179 keyboard fast-refresh
+// tweaks, applied only to Fast refreshes while set. Not for production.
+struct Uc8179KbdExperiment {
+  enum Flag : uint8_t {
+    SkipOldResync = 1 << 0,  // with KbdLut: no DTM1 re-stream after the refresh; CDI N2OCP copies NEW to OLD
+    KbdLut = 1 << 2,         // T4: balanced KW/WK DU register LUT (+ optional PLL)
+  };
+  uint8_t flags = 0;
+  uint8_t lutFrames = 3;  // DU frames per phase for KW/WK (two phases)
+  uint8_t pll = 0;        // 0x30 value during the refresh; 0 keeps the default
+};
+struct Uc8179KbdTiming {
+  uint32_t uploadMs = 0;  // displayStart entry -> DRF command
+  uint32_t drfMs = 0;     // DRF command -> BUSY released
+  uint32_t syncMs = 0;    // OLD-plane resync after the refresh (0 when skipped)
+  uint32_t count = 0;     // refreshes measured
+  uint16_t drfRows = 0;   // gate rows the last DRF scanned (panel height when not windowed)
+  uint32_t doneMs = 0;    // millis() when the last DRF finished (BUSY released)
+};
+// nullptr turns the experiment off. Call from the task that refreshes.
+void setUc8179KbdExperiment(const Uc8179KbdExperiment* experiment);
+// T5: the next Fast refresh runs as Half instead (one cleanup pass).
+void requestUc8179HalfNext();
+// The next Fast refresh re-drives every pixel with the T4 keyboard LUT (a DU
+// scrub, two phases). Ignored unless the experiment has KbdLut set.
+void requestUc8179DuScrubNext();
+// The next Half refresh runs as a DU scrub with `frames` of the keyboard-style
+// register LUT instead of the flashing OTP GC waveform (~300 ms, no flash).
+// Needs no experiment. One shot: the next refresh clears it. Other
+// controllers ignore it.
+void requestUc8179HalfAsDuScrubNext(uint8_t frames);
+Uc8179KbdTiming uc8179KbdTiming();
+// millis() when the running UC8179 refresh's full-screen swing becomes visible
+// (it may lie ahead: direct gray holds white for its first 24 frames), 0 when
+// none runs or the background holds. Any task; other controllers return 0.
+uint32_t uc8179FlashSwingMs();
+// When that refresh is expected to end (millis(), from the last measured run of
+// its waveform); valid while uc8179FlashSwingMs() is nonzero.
+uint32_t uc8179FlashSwingDoneMs();
+// Which waveform that refresh runs, for per-kind flash duck timing: a direct
+// gray (AA) page, an OTP GC Half/Full, or a balanced DU paint (menus and the
+// drawer over gray, scrubs, re-drives; same LUT and length either way).
+// GrayDark: a Night Mode Sharpflash page (stock set: background swings white from frame 0).
+enum class Uc8179FlashKind : uint8_t { Gray, Full, Paint, GrayDark };
+Uc8179FlashKind uc8179FlashKind();
+// millis() when the refresh now starting was planned to swing (0: none
+// planned, or DRF has resolved it into uc8179FlashSwingMs), and its kind. Set
+// before the refresh's power and SPI work, so a frontlight duck can start early.
+uint32_t uc8179FlashPlannedMs();
+Uc8179FlashKind uc8179FlashPlannedKind();
+// The next Fast refresh holds every source at GND and VCOM at VCOM_DC for
+// 2 x `frames` frames (null discharge; pixels do not move). Balanced by
+// construction. One shot; other controllers ignore it.
+void requestUc8179NullNext(uint8_t frames);
+#if FREEINK_UC8179_PANEL_TEMP
+// Last UC8179 on-chip temperature (whole degrees C) and its age. Sampled after
+// a refresh at most once a minute; false until the first sample (or on other
+// controllers, which never sample).
+bool uc8179PanelTemperature(int8_t& celsius, uint32_t& ageMs);
+#endif
+#if FREEINK_TUNING
+// Debug tuning (FREEINK_TUNING builds). Frame counts only feed the DC-balance
+// gated register-LUT generators; out-of-range values use the defaults.
+struct Uc8179Tuning {
+  uint8_t paintFrames = 12;        // exit paint / smooth base DU frames per phase, 6..24
+  uint8_t coldDivisor = 3;         // cold panels get frames / this more, 0 = none, ..10
+  uint8_t heldRedriveFrames = 3;   // smooth re-drive of held blacks (KK only): 0-16
+  int8_t coldC = 15;               // cold below this panel temperature, -10..40
+  uint32_t tempPeriodMs = 60000;   // idle temperature sample period, >= 10 s
+  uint32_t tempRefreshPeriodMs = 300000;  // after-refresh sample period, >= 10 s
+  uint32_t tempMaxAgeMs = 600000;  // samples older than this are ignored, >= 10 s
+};
+void setUc8179Tuning(const Uc8179Tuning& tuning);
+#endif
 
 }  // namespace freeink

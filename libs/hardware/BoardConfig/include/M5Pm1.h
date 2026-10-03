@@ -15,6 +15,7 @@
 // no extra lib wiring.
 
 #include <Arduino.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 
 namespace freeink {
@@ -105,6 +106,7 @@ inline void beginBus() {
 constexpr uint32_t XFER_DELAY_US = 500;
 
 inline bool writeReg(uint8_t reg, uint8_t value) {
+  I2cBusLock bus;
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   Wire.write(value);
@@ -114,6 +116,7 @@ inline bool writeReg(uint8_t reg, uint8_t value) {
 }
 
 inline bool writeBytes(uint8_t reg, const uint8_t* data, uint8_t len) {
+  I2cBusLock bus;
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   for (uint8_t i = 0; i < len; ++i) Wire.write(data[i]);
@@ -128,6 +131,7 @@ inline bool writeReg16(uint8_t reg, uint16_t value) {
 }
 
 inline bool readBytes(uint8_t reg, uint8_t* data, uint8_t len) {
+  I2cBusLock bus;
   Wire.beginTransmission(ADDR);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;

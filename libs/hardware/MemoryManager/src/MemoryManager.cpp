@@ -7,9 +7,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#if defined(ARDUINO)
-#include <Arduino.h>  // Serial (optional logging)
-#endif
+#include <FreeInkLog.h>
 
 namespace freeink {
 namespace {
@@ -23,16 +21,7 @@ uint32_t capsFor(MemPool pool) {
   }
 }
 
-#if defined(ARDUINO) && defined(ENABLE_SERIAL_LOG)
-#define MEM_LOGF(fmt, ...)                                          \
-  do {                                                              \
-    if (Serial) Serial.printf("[%lu] [MEM] " fmt "\n", millis(), ##__VA_ARGS__); \
-  } while (0)
-#else
-#define MEM_LOGF(fmt, ...) \
-  do {                     \
-  } while (0)
-#endif
+#define MEM_LOGF(fmt, ...) LOG_INF("MEM", fmt, ##__VA_ARGS__)
 
 }  // namespace
 
@@ -121,13 +110,8 @@ size_t MemoryManager::boost(size_t* freeBefore, size_t* freeAfter, MemPool pool)
   const size_t after = freeBytes(pool);
   if (freeAfter) *freeAfter = after;
 
-#if defined(ARDUINO) && defined(ENABLE_SERIAL_LOG)
-  if (Serial) {
-    Serial.printf("[%lu] [MEM] Boost: freed %u bytes (%u -> %u free)\n", millis(),
-                  static_cast<unsigned>(after > before ? after - before : 0), static_cast<unsigned>(before),
-                  static_cast<unsigned>(after));
-  }
-#endif
+  MEM_LOGF("Boost: freed %u bytes (%u -> %u free)", static_cast<unsigned>(after > before ? after - before : 0),
+           static_cast<unsigned>(before), static_cast<unsigned>(after));
 
   return after > before ? after - before : 0;
 }

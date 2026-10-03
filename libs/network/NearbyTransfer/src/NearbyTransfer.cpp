@@ -195,6 +195,12 @@ bool EspNowTransport::send(const uint8_t* destinationMac, const uint8_t* data, c
     peer.encrypt = false;
     const esp_err_t addResult = esp_now_add_peer(&peer);
     if (addResult != ESP_OK && addResult != ESP_ERR_ESPNOW_EXIST) return false;
+    // ESP-NOW defaults to 1 Mbps: a 1 KB chunk is ~8 ms on air. 11 Mbps cuts that to ~1 ms; any
+    // receiver decodes it. On failure the peer keeps the default rate.
+    esp_now_rate_config_t rate{};
+    rate.phymode = WIFI_PHY_MODE_11B;
+    rate.rate = WIFI_PHY_RATE_11M_L;
+    esp_now_set_peer_rate_config(destinationMac, &rate);
   }
   return esp_now_send(destinationMac, data, length) == ESP_OK;
 #else

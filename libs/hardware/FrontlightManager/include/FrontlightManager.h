@@ -94,6 +94,9 @@ class FrontlightManager {
   uint8_t brightness() const { return _brightness; }
   uint8_t brightnessLevel() const { return _brightnessLevel; }
   uint8_t colorTemperature() const { return _warmPercent; }
+  // Logs the last applied duty once it has been steady for 400 ms, so a
+  // brightness swipe prints its final value, not every ramp step. Main loop.
+  void flushLog();
 
  private:
 #if FREEINK_CAP_FRONTLIGHT

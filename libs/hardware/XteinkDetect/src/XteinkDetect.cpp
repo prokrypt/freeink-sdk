@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <FreeInkLog.h>
+#include <I2cBusLock.h>
 #include <Wire.h>
 #include <driver/gpio.h>
 
@@ -376,6 +378,13 @@ bool readOemScreenType(uint8_t* out) {
 
 bool screenTypeIsUltraChip(uint8_t st) { return st == 1 || st == 2 || st == 0x0B || st == 0x0C; }
 
+// The MTP header as " XX XX ..." for one log line.
+using MtpHex = char[sizeof(XteinkDisplayProbeDiag::mtp) * 3 + 1];
+const char* mtpHex(MtpHex& buf) {
+  for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) snprintf(buf + i * 3, 4, " %02X", g_probeDiag.mtp[i]);
+  return buf;
+}
+
 // Run the display-bus probe and report the verdict with a diagnostic log line.
 // On a confirmed UltraChip part, `verOut` receives the 5 VER bytes (byte2 is
 // LUT_VER, which identifies the silicon variant).
@@ -384,27 +393,24 @@ bool probeSaysUltraChip(uint8_t verOut[5]) {
   uint8_t flg = 0;
   const DisplayControllerVerdict v = detectXteinkDisplayController(ver, &flg);
   memcpy(verOut, ver, 5);
-  if (Serial) {
-    if (g_probeDiag.verBytesRead == 3) {
-      Serial.printf("[%lu] [XTDET] X3 stock probe VER=%02X %02X %02X BUSY-timeout=%u -> %s\n", millis(),
-                    ver[0], ver[1], ver[2], g_probeDiag.busyTimedOut,
-                    v == DisplayControllerVerdict::Uc81xxConfirmed ? "UC8279"
-                    : v == DisplayControllerVerdict::PrimaryAssumed ? "UC8253"
-                                                                    : "unknown ID (UC8253 default)");
-    } else {
-      Serial.printf("[%lu] [XTDET] bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s\n", millis(), ver[0], ver[1],
-                    ver[2], ver[3], ver[4], flg,
-                    v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
-                    : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
-                                                                    : "inconclusive (default)");
-      // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
-      // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
-      // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
-      if (g_probeDiag.mtpValid) {
-        Serial.printf("[%lu] [XTDET] MTP[0x000..0x02F]:", millis());
-        for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
-        Serial.printf("\n");
-      }
+  if (g_probeDiag.verBytesRead == 3) {
+    LOG_INF("XTDET", "X3 stock probe VER=%02X %02X %02X BUSY-timeout=%u -> %s", ver[0], ver[1], ver[2],
+            g_probeDiag.busyTimedOut,
+            v == DisplayControllerVerdict::Uc81xxConfirmed ? "UC8279"
+            : v == DisplayControllerVerdict::PrimaryAssumed ? "UC8253"
+                                                            : "unknown ID (UC8253 default)");
+  } else {
+    LOG_INF("XTDET", "bus probe VER=%02X %02X %02X %02X %02X FLG=%02X -> %s", ver[0], ver[1], ver[2], ver[3], ver[4],
+            flg,
+            v == DisplayControllerVerdict::Uc81xxConfirmed  ? "UltraChip"
+            : v == DisplayControllerVerdict::PrimaryAssumed ? "default controller"
+                                                            : "inconclusive (default)");
+    // MTP header (RMTP 0xA2), read whenever the status line was driven: 0xA5 at
+    // byte 0 = a UC part with a programmed MTP (the fallback discriminator);
+    // uniform FF/00 = no RMTP support (UC8253 / SSD-family) or unreadable.
+    if (g_probeDiag.mtpValid) {
+      MtpHex hex;
+      LOG_INF("XTDET", "MTP[0x000..0x02F]:%s", mtpHex(hex));
     }
   }
   return v == DisplayControllerVerdict::Uc81xxConfirmed;
@@ -421,11 +427,10 @@ bool applyXteinkDisplayController() {
   uint8_t screenType = 0;
   const bool haveScreenType = readOemScreenType(&screenType);
   if (haveScreenType) {
-    if (Serial)
-      Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType=%u (%s)\n", millis(), screenType,
-                    screenTypeIsUltraChip(screenType) ? "UltraChip" : "default");
-  } else if (Serial) {
-    Serial.printf("[%lu] [XTDET] NVS hw_calib/screenType: not set\n", millis());
+    LOG_INF("XTDET", "NVS hw_calib/screenType=%u (%s)", screenType,
+            screenTypeIsUltraChip(screenType) ? "UltraChip" : "default");
+  } else {
+    LOG_INF("XTDET", "NVS hw_calib/screenType: not set");
   }
 
   // X4 Classic. Factory-provisioned NVS hw_calib/screenType is the first-choice
@@ -445,14 +450,12 @@ bool applyXteinkDisplayController() {
         BoardConfig::ACTIVE.displayController =
             is8279 ? BoardConfig::DisplayController::UC8279 : BoardConfig::DisplayController::UC8179;
         g_probeDiag.promoted = true;
-        if (Serial)
-          Serial.printf("[%lu] [XTDET] X4C: NVS screenType=%u -> %s (probe skipped)\n", millis(), screenType,
-                        is8279 ? "UC8279" : "UC8179");
+        LOG_INF("XTDET", "X4C: NVS screenType=%u -> %s (probe skipped)", screenType, is8279 ? "UC8279" : "UC8179");
         return true;
       }
       // An explicit non-UltraChip value (stock writes 3) is a positive SSD1677
       // verdict — honor it.
-      if (Serial) Serial.printf("[%lu] [XTDET] X4C: keeping SSD1677 (screenType=%u)\n", millis(), screenType);
+      LOG_INF("XTDET", "X4C: keeping SSD1677 (screenType=%u)", screenType);
       return false;
     }
     const auto& d = BoardConfig::ACTIVE.display;
@@ -466,10 +469,9 @@ bool applyXteinkDisplayController() {
     // UC8279 stock drives from OTP only (no external-LUT set, excluded from
     // the ZHX fallback — the driver reports grayscale unsupported for it).
     const bool is8279 = id == 0x02 || id == 0x03 || id == 0x67 || id == 0x68 || id == 0x69;
-    if (Serial)
-      Serial.printf("[%lu] [XTDET] X4C: screenType unset, VER probe id=%02X -> %s\n", millis(), id,
-                    is8179 ? "UC8179" : is8279 ? "UC8279" : "unrecognized -> UC8279 default");
-    if (!is8179 && !is8279 && Serial) {
+    LOG_INF("XTDET", "X4C: screenType unset, VER probe id=%02X -> %s", id,
+            is8179 ? "UC8179" : is8279 ? "UC8279" : "unrecognized -> UC8279 default");
+    if (!is8179 && !is8279) {
       // Unknown silicon: dump the MTP Command Default Setting block so a field
       // log identifies the part outright — TRES in this block is the panel's
       // own programmed resolution, which separates the 800x480 parts from any
@@ -478,9 +480,8 @@ bool applyXteinkDisplayController() {
       epdCmdRead(p, UC81XX_CMD_RMTP, raw, sizeof(raw));
       memcpy(g_probeDiag.mtp, raw + 1, sizeof(g_probeDiag.mtp));
       g_probeDiag.mtpValid = true;
-      Serial.printf("[%lu] [XTDET] X4C: VER=%02X %02X %02X, MTP[0x000..0x02F]:", millis(), ver[0], ver[1], ver[2]);
-      for (size_t i = 0; i < sizeof(g_probeDiag.mtp); i++) Serial.printf(" %02X", g_probeDiag.mtp[i]);
-      Serial.printf("\n");
+      MtpHex hex;
+      LOG_INF("XTDET", "X4C: VER=%02X %02X %02X, MTP[0x000..0x02F]:%s", ver[0], ver[1], ver[2], mtpHex(hex));
     }
     // Unrecognized (0xFF float / 0x00) still defaults to UC8279: every field
     // X4C seen without hw_calib carries a UC part (an SSD1677 answers the SSD
@@ -515,22 +516,20 @@ bool applyXteinkDisplayController() {
       if (lutVer == 0x02 || lutVer == 0x03 || lutVer == 0x67 || lutVer == 0x68 || lutVer == 0x69) {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;
-        if (Serial)
-          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8279 800x480 (LUT_VER=%02X%s)\n", millis(), lutVer,
-                        lutVer == 0x69 ? ", reserved" : lutVer == 0x67 ? ", OTP-only" : "");
+        LOG_INF("XTDET", "promoted SSD1677 -> UC8279 800x480 (LUT_VER=%02X%s)", lutVer,
+                lutVer == 0x69 ? ", reserved" : lutVer == 0x67 ? ", OTP-only" : "");
       } else {
         BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8179;
         BoardConfig::ACTIVE.displayControllerVariant = lutVer;
-        if (Serial)
-          Serial.printf("[%lu] [XTDET] promoted SSD1677 -> UC8179 (LUT_VER=%02X%s)\n", millis(), lutVer,
-                        lutVer == 0x01 ? "" : ", unrecognized -> UC8179 default");
+        LOG_INF("XTDET", "promoted SSD1677 -> UC8179 (LUT_VER=%02X%s)", lutVer,
+                lutVer == 0x01 ? "" : ", unrecognized -> UC8179 default");
       }
       return true;
     }
     case BoardConfig::DisplayController::UC8253:
       BoardConfig::ACTIVE.displayController = BoardConfig::DisplayController::UC8279;
       g_probeDiag.promoted = true;
-      if (Serial) Serial.printf("[%lu] [XTDET] promoted UC8253 -> UC8279\n", millis());
+      LOG_INF("XTDET", "promoted UC8253 -> UC8279");
       return true;
     default:
       return false;  // already an UltraChip part (or a non-sibling default)
@@ -594,6 +593,7 @@ constexpr uint8_t QMI8658_WHO_AM_I_REG = 0x00;
 constexpr uint8_t QMI8658_WHO_AM_I_VALUE = 0x05;
 
 bool readReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;
@@ -603,6 +603,7 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t* out) {
 }
 
 bool readReg16LE(uint8_t addr, uint8_t reg, uint16_t* out) {
+  freeink::I2cBusLock bus;
   Wire.beginTransmission(addr);
   Wire.write(reg);
   if (Wire.endTransmission(false) != 0) return false;

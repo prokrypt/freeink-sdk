@@ -48,6 +48,17 @@ class PanelDriver {
   // --- lifecycle ---
   virtual void begin(EpdBus& bus) = 0;
   virtual void deepSleep(EpdBus& bus) = 0;
+  // Turn the charge pump/booster off between refreshes while the panel keeps
+  // its image; the next refresh powers it back on. True when it switched off.
+  virtual bool powerOffIdle(EpdBus& bus) {
+    (void)bus;
+    return false;
+  }
+  // Booster back on ahead of the next refresh. True when it switched on.
+  virtual bool powerOnIdle(EpdBus& bus) {
+    (void)bus;
+    return false;
+  }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;
@@ -204,6 +215,20 @@ class PanelDriver {
   // --- optional, controller-specific hooks (no-op by default) ---
   virtual void requestResync(uint8_t settlePasses) { (void)settlePasses; }
   virtual void skipInitialResync() {}
+  // True while the panel shows a gray image whose pixel state a B/W frame
+  // cannot describe (UC8179 direct gray): such a frame must not be seeded.
+  virtual bool grayOnPanel() const { return false; }
+  // Smooth gray: every gray page shows its B/W base first, then the gray pass
+  // holds black/white pixels and only gray pixels swing (UC8179 only).
+  virtual void setSmoothGray(bool smooth) { (void)smooth; }
+  // The panel still shows `frame` (a software restart kept it). Differential
+  // drivers load it as the previous frame so the first refresh can be Fast.
+  // False when the driver cannot use it.
+  virtual bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
+    (void)bus;
+    (void)frame;
+    return false;
+  }
   // Content-polarity hint: true while the facade is rendering inverted (dark
   // background) frames. Differential drivers idle unchanged pixels, so on a
   // dark background the residue of every white->black transition parks in the
@@ -211,6 +236,11 @@ class PanelDriver {
   // non-flashing. Drivers may use this to widen their drive set (re-blacken
   // the unchanged background each update) or bias their deghost direction.
   virtual void setBackgroundHint(bool darkBackground) { (void)darkBackground; }
+  // True when overlay gray (copyGrayscale* + displayGray) works on inverted
+  // frames: the base arrives inverted and the driver folds the masks in panel
+  // polarity (see setBackgroundHint). Absolute/Direct planes stay unsupported
+  // while inverted.
+  virtual bool supportsInvertedOverlayGray() const { return false; }
   // Capture the cancellation generation at the start of a logical UI render.
   // This must happen before CPU-side composition: input arriving while an old
   // frame is being composed must still cancel its optional post-refresh work.
