@@ -627,6 +627,8 @@ void InputManager::setTuning(const Tuning& t) {
   TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = t.touchMultiSeparationSlopPx;
   TOUCH_LONG_PRESS_MS = t.touchLongPressMs;
   TOUCH_CONTACT_JUMP_PX = t.touchContactJumpPx;
+  TOUCH_ROTATION_MIN_DEGREES = t.touchRotationMinDegrees;
+  TOUCH_ROTATION_SCALE_TOLERANCE_PCT = t.touchRotationScaleTolerancePct;
 }
 #endif
 
@@ -893,12 +895,17 @@ void InputManager::startMultiTouchGesture(const TouchSnapshot& snapshot, const u
   }
 
   trackedTouchContactCount = snapshot.count;
-  multiTouchRotationEligible = trackedTouchContactCount == 2;
   for (uint8_t i = 0; i < trackedTouchContactCount; ++i) {
     multiTouchContacts[i] = {snapshot.points[i].id, snapshot.points[i].point, snapshot.points[i].point};
     multiTouchContacts[i].start.timestamp = now;
   }
   for (uint8_t i = trackedTouchContactCount; i < MAX_TOUCH_CONTACTS; ++i) multiTouchContacts[i] = {};
+  if (trackedTouchContactCount == 2) {
+    multiTouchRotation.start({multiTouchContacts[0].start.x, multiTouchContacts[0].start.y},
+                             {multiTouchContacts[1].start.x, multiTouchContacts[1].start.y});
+  } else {
+    multiTouchRotation.cancel();
+  }
 
   multiTouchGestureState = MultiTouchGestureState::Tracking;
   touchMultiContactSequence = true;
@@ -921,7 +928,7 @@ void InputManager::blockMultiTouchGesture() {
 void InputManager::resetMultiTouchGesture() {
   multiTouchGestureState = MultiTouchGestureState::Idle;
   trackedTouchContactCount = 0;
-  multiTouchRotationEligible = false;
+  multiTouchRotation.cancel();
   touchMultiContactSequence = false;
   for (auto& contact : multiTouchContacts) contact = {};
 }
@@ -1058,16 +1065,6 @@ bool InputManager::hasStableTranslationGeometry() const {
   return true;
 }
 
-bool InputManager::hasEligibleRotationScale() const {
-  if (trackedTouchContactCount != 2) return false;
-  const auto toGesturePoint = [](const TouchPoint& point) {
-    return freeink::input_detail::GesturePoint{point.x, point.y};
-  };
-  return freeink::input_detail::hasRotationScale(
-      toGesturePoint(multiTouchContacts[0].start), toGesturePoint(multiTouchContacts[1].start),
-      toGesturePoint(multiTouchContacts[0].last), toGesturePoint(multiTouchContacts[1].last));
-}
-
 bool InputManager::isMultiTouchTranslation(const unsigned long now) const {
   if (trackedTouchContactCount < 2 || now - multiTouchContacts[0].start.timestamp > TOUCH_MULTI_SWIPE_MAX_MS ||
       !hasStableTranslationGeometry()) {
@@ -1110,21 +1107,18 @@ bool InputManager::isMultiTouchTranslation(const unsigned long now) const {
   return false;
 }
 
-bool InputManager::classifyMultiTouchRotation(const unsigned long now) {
-  if (!multiTouchRotationEligible || trackedTouchContactCount != 2 ||
-      now - multiTouchContacts[0].start.timestamp > TOUCH_MULTI_SWIPE_MAX_MS) {
+bool InputManager::classifyMultiTouchRotation(const unsigned long now, const bool atRelease) {
+  if (trackedTouchContactCount != 2 || now - multiTouchContacts[0].start.timestamp > TOUCH_MULTI_SWIPE_MAX_MS) {
     return false;
   }
 
-  const auto toGesturePoint = [](const TouchPoint& point) {
-    return freeink::input_detail::GesturePoint{point.x, point.y};
-  };
+  freeink::input_detail::RotationTrackerConfig config;
+  config.minDegrees = TOUCH_ROTATION_MIN_DEGREES;
+  config.scaleTolerancePercent = TOUCH_ROTATION_SCALE_TOLERANCE_PCT;
   freeink::input_detail::RotationResult result;
-  if (!freeink::input_detail::classifyRotation(
-          toGesturePoint(multiTouchContacts[0].start), toGesturePoint(multiTouchContacts[1].start),
-          toGesturePoint(multiTouchContacts[0].last), toGesturePoint(multiTouchContacts[1].last), result)) {
-    return false;
-  }
+  const bool rotated =
+      atRelease ? multiTouchRotation.evaluateAtRelease(config, result) : multiTouchRotation.evaluate(config, result);
+  if (!rotated) return false;
 
   multiTouchRotationDegrees = result.degrees;
   multiTouchRotationCenterX = result.centerX;
@@ -1158,7 +1152,7 @@ bool InputManager::classifyMultiTouchPinch(const unsigned long now) {
 }
 
 void InputManager::finishMultiTouchGesture(const unsigned long now) {
-  if (classifyMultiTouchRotation(now)) {
+  if (classifyMultiTouchRotation(now, /*atRelease=*/true)) {
     multiTouchGestureState = MultiTouchGestureState::Blocked;
     return;
   }
@@ -1237,7 +1231,13 @@ void InputManager::updateMultiTouchGesture(const TouchSnapshot& snapshot, const 
     blockMultiTouchGesture();
     return;
   }
-  if (multiTouchRotationEligible && !hasEligibleRotationScale()) multiTouchRotationEligible = false;
+  if (trackedTouchContactCount != 2) return;
+  multiTouchRotation.update({multiTouchContacts[0].last.x, multiTouchContacts[0].last.y},
+                            {multiTouchContacts[1].last.x, multiTouchContacts[1].last.y});
+  if (rotationCommitsAtThreshold && classifyMultiTouchRotation(now, /*atRelease=*/false)) {
+    // Committed mid-gesture: the remaining motion and the release belong to it.
+    multiTouchGestureState = MultiTouchGestureState::Blocked;
+  }
 }
 
 bool InputManager::wasHomeKeyPressed() const { return touchHomeKeyEvent; }

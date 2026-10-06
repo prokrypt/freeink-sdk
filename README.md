@@ -299,7 +299,9 @@ the active-low IRQ line). The InputManager exposes `hasTouch/isTouchPressed/wasT
 wasTouchReleased/getTouchPoint`; it delivers coordinates raw-panel-oriented and the
 app owns display-orientation mapping. GT911 additionally provides allocation-free
 multi-contact snapshots, completed 2-4 finger translation gestures, and completed
-two-finger rotations with a signed angle, center, and duration. The GT911 boards set
+two-finger rotations with a signed angle (accumulated sample by sample, reported on
+release or, with `setRotationCommitsAtThreshold(true)`, as soon as the twist passes
+the threshold), center, and duration. The GT911 boards set
 ### OnePage Reader board support (ESP32-C61)
 
 The OnePage Reader is an open-hardware DIY e-reader built around the **ESP32-C61**

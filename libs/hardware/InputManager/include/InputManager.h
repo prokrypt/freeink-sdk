@@ -16,6 +16,8 @@
 
 #include <cstdint>
 
+#include "MultiTouchGestureMath.h"
+
 // FREEINK_TUNING (debug builds): the timing and slop constants marked
 // INPUT_TUNABLE are settable through InputManager::setTuning().
 #if FREEINK_TUNING
@@ -40,6 +42,8 @@ class InputManager {
     int touchMultiSeparationSlopPx = 45;
     unsigned long touchLongPressMs = 500;
     int touchContactJumpPx = 120;
+    float touchRotationMinDegrees = 20.0f;
+    int touchRotationScaleTolerancePct = 35;
   };
   // Main task. Swipe min > 8 px and tap slop below it, else defaults; tap-on-release
   // slop stays swipe min - 1. Other values are the caller's (app knob ranges).
@@ -192,12 +196,19 @@ class InputManager {
   // replacements, and sequences above MAX_TOUCH_CONTACTS are rejected.
   bool wasMultiTouchSwipe(uint8_t& contactCount, float& nxStart, float& nyStart, float& nxEnd, float& nyEnd,
                           unsigned long& durationMs) const;
-  // One-shot two-contact rotation on release. Positive degrees are clockwise
-  // and negative degrees counterclockwise in the corrected panel-native frame,
-  // normalized to [-180, 180]. The center is the average of the start/end
-  // contact centroids, normalized to 0..1. Pinches and sub-threshold turns are
+  // One-shot two-contact rotation, on release by default. Positive degrees are
+  // clockwise and negative degrees counterclockwise in the corrected
+  // panel-native frame, accumulated sample by sample, so a twist past 180°
+  // keeps its direction. The center is the average of the start/end contact
+  // centroids, normalized to 0..1. Pinches and sub-threshold turns are
   // rejected, and an accepted rotation cannot also become a translation.
   bool wasMultiTouchRotation(float& degrees, float& nxCenter, float& nyCenter, unsigned long& durationMs) const;
+  // true: report the rotation on the first sample whose twist passes the
+  // threshold, while the fingers are still down; the rest of that contact
+  // sequence then produces no multi-touch gesture. false (default): report on
+  // release. Process-wide, like the tuning constants, so a sampling task's
+  // copy of the manager sees it too.
+  static void setRotationCommitsAtThreshold(bool enabled) { rotationCommitsAtThreshold = enabled; }
   // One-shot two-contact pinch/spread on release. `scale` is end separation
   // divided by start separation (<1.0 = pinch in / zoom out, >1.0 = spread /
   // zoom in). The center is the average of the start/end contact centroids,
@@ -407,9 +418,8 @@ class InputManager {
                              uint8_t assignment[MAX_TOUCH_CONTACTS]) const;
   bool isTrackedContact(const MultiTouchPoint& point) const;
   bool hasStableTranslationGeometry() const;
-  bool hasEligibleRotationScale() const;
   bool isMultiTouchTranslation(unsigned long now) const;
-  bool classifyMultiTouchRotation(unsigned long now);
+  bool classifyMultiTouchRotation(unsigned long now, bool atRelease);
   bool classifyMultiTouchPinch(unsigned long now);
   void normalizeTouchPoint(uint16_t x, uint16_t y, float& nx, float& ny) const;
 
@@ -454,7 +464,7 @@ class InputManager {
   MultiTouchGestureState multiTouchGestureState = MultiTouchGestureState::Idle;
   TrackedTouchContact multiTouchContacts[MAX_TOUCH_CONTACTS] = {};
   uint8_t trackedTouchContactCount = 0;
-  bool multiTouchRotationEligible = false;  // latched false if any frame leaves the allowed scale band
+  freeink::input_detail::RotationTracker multiTouchRotation;  // two-contact sequences only
   bool touchMultiContactSequence = false;   // suppresses single-contact classifiers until full release
   bool multiTouchSwipeEvent = false;
   uint8_t multiTouchSwipeContactCount = 0;
@@ -509,6 +519,11 @@ class InputManager {
   INPUT_TUNABLE unsigned long TOUCH_SWIPE_MAX_MS = 700;
   INPUT_TUNABLE unsigned long TOUCH_MULTI_SWIPE_MAX_MS = 2000;
   INPUT_TUNABLE int TOUCH_MULTI_CONTACT_SEPARATION_SLOP_PX = 45;
+  // Two-contact rotation: minimum accumulated twist, and how far the finger gap
+  // may drift from its starting length (percent) when the twist is judged.
+  INPUT_TUNABLE float TOUCH_ROTATION_MIN_DEGREES = 20.0f;
+  INPUT_TUNABLE int TOUCH_ROTATION_SCALE_TOLERANCE_PCT = 35;
+  static inline bool rotationCommitsAtThreshold = false;
   static constexpr int64_t TOUCH_CONTACT_ASSIGNMENT_AMBIGUITY_PX_SQ = 64;
   INPUT_TUNABLE unsigned long TOUCH_LONG_PRESS_MS = 500;  // shorter than HOME_KEY_LONG_PRESS_MS: a screen hold has
                                                              // no button travel to absorb
