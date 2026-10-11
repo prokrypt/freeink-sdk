@@ -239,7 +239,7 @@ void XMLCALL OpdsParser::startElement(void* userData, const XML_Char* name, cons
         } else if (rel && strstr(rel, "opds-spec.org/image") != nullptr) {
           // Cover art: prefer the full image; a thumbnail only fills a gap.
           if (strstr(rel, "/thumbnail") == nullptr || self->currentEntry.coverHref.empty()) {
-            assignBounded(self->currentEntry.coverHref, href, MAX_HREF_CHARS);
+            self->currentEntry.coverHref.assign(href, strnlen(href, MAX_HREF_CHARS));
           }
         }
       }
@@ -317,7 +317,7 @@ void XMLCALL OpdsParser::endElement(void* userData, const XML_Char* name) {
         // so whichever the feed provides wins without depending on order.
         if (self->collectCurrentEntry && (self->summaryIsContent || self->currentEntry.description.empty())) {
           while (!self->currentText.empty() && self->currentText.back() == ' ') self->currentText.pop_back();
-          self->currentEntry.description = self->currentText;
+          self->currentEntry.description.assign(self->currentText.data(), self->currentText.size());
         }
         self->inSummary = false;
       }

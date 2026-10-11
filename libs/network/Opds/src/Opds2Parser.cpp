@@ -370,7 +370,7 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
       } else if (strcmp(pendingKey, "description") == 0) {
         // Inline feed description: the detail page's source when the
         // publication offers no self document (or that document omits it).
-        assignBounded(currentEntry.description, value, len, MAX_DESCRIPTION_CHARS);
+        currentEntry.description.assign(value, len < MAX_DESCRIPTION_CHARS ? len : MAX_DESCRIPTION_CHARS);
       }
       break;
     case Scope::PUB_TITLE:
@@ -395,7 +395,7 @@ void Opds2Parser::onStringValue(const char* value, const size_t len) {
     case Scope::PUB_IMAGE:
       // First image entry is the cover, matching the publication-doc parser.
       if (strcmp(pendingKey, "href") == 0 && currentEntry.coverHref.empty()) {
-        assignBounded(currentEntry.coverHref, value, len, MAX_HREF_CHARS);
+        currentEntry.coverHref.assign(value, len < MAX_HREF_CHARS ? len : MAX_HREF_CHARS);
       }
       break;
     case Scope::PRICE:
