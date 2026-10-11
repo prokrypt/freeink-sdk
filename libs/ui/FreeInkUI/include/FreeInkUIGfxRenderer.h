@@ -166,6 +166,18 @@ class GfxRendererTarget final : public DrawTarget {
       }
       return;
     }
+    if (paint.kind == PaintKind::Dither) {
+      // Rounded dithered border; the renderer's Color overload keeps its dither phase.
+      if (corners == CornersAll) {
+        renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, width, radius, gfxColor(paint.color));
+      } else {
+        renderer.drawRoundedRect(rect.x, rect.y, rect.width, rect.height, width, radius,
+                                 (corners & CornerTopLeft) != 0, (corners & CornerTopRight) != 0,
+                                 (corners & CornerBottomLeft) != 0, (corners & CornerBottomRight) != 0,
+                                 gfxColor(paint.color));
+      }
+      return;
+    }
     const bool black = paint.color != Color::White;
     if (radius > 0) {
       if (corners == CornersAll) {
