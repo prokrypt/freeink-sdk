@@ -50,9 +50,10 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
   esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
   // ext1 hands each pad to the RTC domain for sleep, where the digital pull from
   // pinMode() does not apply and esp_sleep_config_gpio_isolate() floats the pad.
-  // Set the idle-level pull in the RTC domain and keep that domain powered so it
-  // holds; a pin without an external resistor otherwise floats and wakes at random.
-#if SOC_PM_SUPPORT_RTC_PERIPH_PD
+  // Set the idle-level pull in the RTC domain. It only holds while that domain
+  // stays powered, which costs deep-sleep current, so boards whose wake pins lack
+  // an external resistor opt in with FREEINK_EXT1_KEEP_RTC_PULLS=1.
+#if SOC_PM_SUPPORT_RTC_PERIPH_PD && FREEINK_EXT1_KEEP_RTC_PULLS
   esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
 #endif
   for (int pin = 0; pin < 64; ++pin) {
