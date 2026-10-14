@@ -279,8 +279,11 @@ public:
         styles.active = styles.selected;
         break;
       case SelectionStyle::Outline:
+      case SelectionStyle::GrayOutline:
         styles.selected = styles.normal;
-        styles.selected.border = Paint::solid(Color::Black);
+        styles.selected.border = theme_.listSelectionStyle == SelectionStyle::GrayOutline
+                                     ? Paint::dither(Color::DarkGray)
+                                     : Paint::solid(Color::Black);
         styles.selected.borderWidth = 2;
         styles.active = styles.selected;
         break;
