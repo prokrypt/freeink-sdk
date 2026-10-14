@@ -30,7 +30,13 @@ struct ListItem {
   // It shares the row's logical index and interaction value. Kept last so
   // existing aggregate initializers remain source-compatible.
   const char *sectionHeading = nullptr;
+  // A status mark left of the row icon (or label), out to the screen edge, as
+  // ListProps::iconsInMargin draws its icons; nothing in the row moves.
+  BitmapRef marginIcon{};
 };
+
+// ListItem::marginIcon exists (feature test for apps built against older pins).
+#define FREEINK_UI_LIST_MARGIN_ICON 1
 
 struct ListNav;
 
@@ -782,6 +788,10 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
     const BitmapRef icon =
         item.icon ? item.icon : resolveBitmap(frame.assets(), item.iconAsset);
+    if (item.marginIcon && !props.iconsInMargin) {
+      drawListMarginIcon(frame.target(), content, sidePad, props,
+                         item.marginIcon, style.foreground);
+    }
     if (icon && props.iconsInMargin) {
       drawListMarginIcon(frame.target(), content, sidePad, props, icon,
                          style.foreground);
