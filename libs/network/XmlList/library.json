@@ -1,0 +1,11 @@
+{
+  "name": "XmlList",
+  "version": "1.0.0",
+  "description": "FreeInk streaming XML list extractor (XmlListParser): emits one row per repeating element, with fields picked by element/attribute selectors. Built for WebDAV PROPFIND and similar list responses.",
+  "keywords": "xml, list, webdav, streaming",
+  "authors": [{"name": "FreeInk SDK Contributors"}],
+  "dependencies": {},
+  "platforms": "espressif32",
+  "frameworks": ["arduino"],
+  "notes": "Needs expat (XML_*). The consuming project must provide an expat library on the include/link path."
+}

@@ -1,7 +1,43 @@
 #pragma once
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <string>
+#if defined(ARDUINO_ARCH_ESP32) && !defined(SIMULATOR)
+#include <esp_heap_caps.h>
+#endif
+
+// PSRAM-first allocator for the long per-entry strings: a feed page holds up to
+// MAX_ENTRIES of them, and allocations under the 1 KB malloc threshold would
+// otherwise land in internal RAM. Plain CPU data only (no DMA/ISR). Falls back
+// to the internal heap, then aborts like std::allocator with exceptions off.
+template <typename T>
+struct OpdsPsramAllocator {
+  using value_type = T;
+  OpdsPsramAllocator() noexcept = default;
+  template <typename U>
+  OpdsPsramAllocator(const OpdsPsramAllocator<U>&) noexcept {}  // NOLINT: allocator rebind
+  T* allocate(const size_t n) {
+#if defined(ARDUINO_ARCH_ESP32) && !defined(SIMULATOR)
+    if (void* p = heap_caps_malloc_prefer(n * sizeof(T), 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT,
+                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) {
+      return static_cast<T*>(p);
+    }
+#endif
+    return std::allocator<T>{}.allocate(n);
+  }
+  void deallocate(T* p, const size_t n) noexcept {
+#if defined(ARDUINO_ARCH_ESP32) && !defined(SIMULATOR)
+    (void)n;
+    heap_caps_free(p);  // IDF operator new is malloc, so this frees either path
+#else
+    std::allocator<T>{}.deallocate(p, n);
+#endif
+  }
+  friend bool operator==(const OpdsPsramAllocator&, const OpdsPsramAllocator&) noexcept { return true; }
+  friend bool operator!=(const OpdsPsramAllocator&, const OpdsPsramAllocator&) noexcept { return false; }
+};
+using OpdsPsramString = std::basic_string<char, std::char_traits<char>, OpdsPsramAllocator<char>>;
 
 /**
  * Type of OPDS entry.
@@ -35,6 +71,13 @@ struct OpdsEntry {
   // Publication "self" link (application/opds-publication+json): fetched to
   // build the detail page. Empty when the feed offers none.
   std::string selfHref;
+  // Feed-inline description (Atom summary/content), tags stripped and capped
+  // at MAX_DESCRIPTION_CHARS. OPDS 1.x has no per-publication document, so
+  // this is the detail page's only description source there.
+  OpdsPsramString description;
+  // Feed-inline cover art href (OPDS 2.0 `images`, OPDS 1.x image rel links);
+  // the detail page's cover source when the publication has no self document.
+  OpdsPsramString coverHref;
 };
 
 // Entry id marking a group's "see all" link; the UI supplies the label.
@@ -74,4 +117,7 @@ constexpr size_t MAX_HREF_CHARS = 768;
 constexpr size_t MAX_SEARCH_TEMPLATE_CHARS = 768;
 constexpr size_t MAX_PAGE_URL_CHARS = 768;
 constexpr size_t MAX_FACET_ENTRIES = 24;
+// Per-entry description cap: enough for the detail page's visible lines while
+// bounding worst-case feed RAM (MAX_ENTRIES * this).
+constexpr size_t MAX_DESCRIPTION_CHARS = 500;
 }  // namespace OpdsLimits
