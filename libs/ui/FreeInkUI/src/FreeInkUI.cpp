@@ -1012,7 +1012,8 @@ void drawBitmap(DrawTarget& target, Rect rect, BitmapRef bitmap, BitmapMode mode
 
 void drawListMarginIcon(DrawTarget& target, const Rect& content, const int16_t sidePad,
                         const ListProps& props, const BitmapRef& icon, const Paint& foreground) {
-  int16_t size = props.iconSize > 0 ? props.iconSize : static_cast<int16_t>(icon.width);
+  // Native size: scaling a small status mark (20 px badge) up to the row icon size pixellates it.
+  int16_t size = static_cast<int16_t>(icon.width);
   // LTR: everything left of the text, out to the screen edge (x = 0), with the
   // mark ending where the text starts. RTL: the row's own side padding.
   const int16_t room = props.rtl ? sidePad : content.x;
