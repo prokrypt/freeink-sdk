@@ -8,6 +8,7 @@ struct ActiveProfile {
   uint32_t displaySpiHz=10000000;
   struct { bool mirrorX=false, mirrorY=false; } orientation;
   struct { int8_t sclk=12, mosi=11, cs=13, dc=18, rst=14, busy=6, powerEnable=-1; } display;
+  struct { uint8_t busWidth=0; } sdmmc;
   Board board=Board::XteinkX4Pro;
   DisplayController displayController=DisplayController::SSD1677;
   uint8_t displayControllerVariant=0x68;
