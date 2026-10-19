@@ -973,6 +973,7 @@ bool FreeInkDisplay::displayGrayscaleBaseAsync(RefreshMode fallback) {
   }
   cancelGrayscalePass();
   _grayPassFailed = false;
+  DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
 #ifdef EINK_DISPLAY_SINGLE_BUFFER_MODE
