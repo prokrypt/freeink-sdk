@@ -53,6 +53,7 @@ struct Gate {
   fakeble::Stage configured = fakeble::Stage::None;
   fakeble::Stage active = fakeble::Stage::None;
   bool released = false;
+  bool stubborn = false;
   Task* heldTask = nullptr;
 };
 
@@ -78,6 +79,7 @@ bool holdHere(fakeble::Stage stage) {
   g.cv.wait(lock, [&g] { return g.released; });
   g.active = fakeble::Stage::None;
   g.configured = fakeble::Stage::None;
+  g.stubborn = false;
   g.heldTask = nullptr;
   lock.unlock();
   // A task deleted while it sat in this wait must never run again: on the device
@@ -90,7 +92,7 @@ void releaseHeld(bool onlyConnectStage) {
   Gate& g = gate();
   {
     std::lock_guard<std::mutex> guard(g.m);
-    if (g.active == fakeble::Stage::None) return;
+    if (g.active == fakeble::Stage::None || g.stubborn) return;
     if (onlyConnectStage && g.active != fakeble::Stage::Connect) return;
     g.released = true;
   }
@@ -171,16 +173,30 @@ uint32_t ulTaskNotifyTake(BaseType_t clearOnExit, uint32_t) {
 // --- Fake stack state -----------------------------------------------------------
 namespace fakeble {
 
+void resetTeardownInstrumentation();  // with the NimBLEDevice fakes below
+
 struct FakeState {
-  bool initialized = false;
+  std::atomic<bool> initialized{false};
   int lastError = 0;
   size_t connectCalls = 0;
+  std::vector<std::string> connectAddresses;
+  bool failConnects = false;
   std::vector<std::unique_ptr<NimBLERemoteCharacteristic>> owned;
   std::vector<NimBLERemoteCharacteristic*> chars;
   NimBLERemoteService service;
+  NimBLERemoteService gapService;
+  // What NimBLE holds after discovery on this link; connect() clears it.
+  std::vector<NimBLERemoteService*> discovered;
+  bool uuidSearchFails = false;
   NimBLEClient* client = nullptr;
   NimBLEScan scan;
   std::map<std::string, std::vector<uint8_t>> nvs;
+  bool lingerOnDisconnect = false;
+
+  FakeState() {
+    service.uuid_ = NimBLEUUID(0x1812);
+    gapService.uuid_ = NimBLEUUID(0x1800);
+  }
 
   NimBLERemoteCharacteristic* at(int index) {
     if (index < 0 || static_cast<size_t>(index) >= chars.size()) return nullptr;
@@ -198,10 +214,10 @@ struct FakeState {
     return static_cast<int>(chars.size()) - 1;
   }
 
-  int addInput() {
+  int addInput(uint8_t reportId) {
     const int index = add(0x2A4D, true, false, true);
     NimBLERemoteCharacteristic* chr = at(index);
-    chr->reportReference_.bytes_[0] = 0;     // report id
+    chr->reportReference_.bytes_[0] = reportId;
     chr->reportReference_.bytes_[1] = 0x01;  // Input
     chr->reportReference_.len_ = 2;
     chr->hasReportReference_ = true;
@@ -239,16 +255,30 @@ struct FakeState {
 
   size_t retained() const { return scan.retained_.size(); }
 
+  void finishDisconnect() {
+    lingerOnDisconnect = false;
+    if (client != nullptr) client->disconnecting_ = false;
+  }
+
+  NimBLEClient* disconnectedClient() const {
+    return client != nullptr && !client->connected_ && !client->disconnecting_ ? client : nullptr;
+  }
+
   void reset() {
     owned.clear();
     chars.clear();
     initialized = false;
     lastError = 0;
     connectCalls = 0;
+    connectAddresses.clear();
+    failConnects = false;
     delete client;
     client = nullptr;
     scan = NimBLEScan();
     nvs.clear();
+    lingerOnDisconnect = false;
+    discovered.clear();
+    uuidSearchFails = false;
   }
 };
 
@@ -260,14 +290,17 @@ FakeState& state() {
 freeink::BleKeyboardHost& host() { return freeink::BleKeyboardHost::getInstance(); }
 
 void resetWorld() {
-  if (host().isRunning()) host().end();
-  releaseHeld(false);
+  releaseHold();
+  finishDisconnect();
+  if (host().isRunning() || host().isStopping()) host().end();
   {
     std::lock_guard<std::mutex> guard(gate().m);
     gate().configured = Stage::None;
+    gate().stubborn = false;
   }
   g_deletedWhileHeld = false;
   state().reset();
+  resetTeardownInstrumentation();
   g_clockMs = 1000;
 }
 
@@ -300,7 +333,7 @@ void peerDisconnect() { state().peerDrop(); }
 int addCharacteristic(uint16_t uuid, bool canRead, bool canWrite, bool canNotify) {
   return state().add(uuid, canRead, canWrite, canNotify);
 }
-int addInputReport() { return state().addInput(); }
+int addInputReport(uint8_t reportId) { return state().addInput(reportId); }
 void setValue(int index, const uint8_t* data, size_t len) { state().set(index, data, len); }
 bool notify(int index, const uint8_t* data, size_t len) { return state().notify(index, data, len); }
 
@@ -318,8 +351,31 @@ bool waitUntilHeld(Stage stage, uint32_t timeoutMs) {
   return g.cv.wait_for(lock, std::chrono::milliseconds(timeoutMs), [&g, stage] { return g.active == stage; });
 }
 
+void holdStubbornlyAt(Stage stage) {
+  std::lock_guard<std::mutex> guard(gate().m);
+  gate().configured = stage;
+  gate().stubborn = true;
+}
+
+void releaseHold() {
+  {
+    std::lock_guard<std::mutex> guard(gate().m);
+    gate().stubborn = false;
+  }
+  releaseHeld(false);
+}
+
+void lingerOnDisconnect() { state().lingerOnDisconnect = true; }
+
+void finishDisconnect() { state().finishDisconnect(); }
+
+bool clientExists() { return state().client != nullptr; }
+
 bool taskDeletedWhileHeld() { return g_deletedWhileHeld; }
 size_t connectCalls() { return state().connectCalls; }
+std::vector<std::string> connectAddresses() { return state().connectAddresses; }
+void failConnects(bool fail) { state().failConnects = fail; }
+void failServiceSearchByUuid(bool fail) { state().uuidSearchFails = fail; }
 unsigned long clockMs() { return g_clockMs.load(); }
 void advanceMillis(uint32_t ms) { g_clockMs += ms; }
 
@@ -355,13 +411,15 @@ const std::vector<NimBLERemoteCharacteristic*>& NimBLERemoteService::getCharacte
   return state().chars;
 }
 
-bool NimBLEClient::connect(const NimBLEAddress&) {
+bool NimBLEClient::connect(const NimBLEAddress& address) {
   state().connectCalls++;
-  if (holdHere(Stage::Connect)) {
+  state().connectAddresses.push_back(address.toString());
+  if (holdHere(Stage::Connect) || state().failConnects) {
     state().lastError = BLE_HS_ETIMEOUT;
     return false;
   }
   state().lastError = 0;
+  state().discovered.clear();
   connected_ = true;
   return true;
 }
@@ -370,6 +428,7 @@ bool NimBLEClient::disconnect() {
   releaseHeld(false);
   if (!connected_) return true;
   connected_ = false;
+  disconnecting_ = state().lingerOnDisconnect;
   if (callbacks_ != nullptr) callbacks_->onDisconnect(this, 0x16);
   return true;
 }
@@ -385,9 +444,23 @@ bool NimBLEClient::cancelConnect() {
 
 int NimBLEClient::getLastError() const { return state().lastError; }
 
+// Like NimBLE: a service already discovered on this link is found without a
+// request; otherwise the peer is searched for that one UUID.
 NimBLERemoteService* NimBLEClient::getService(const NimBLEUUID& uuid) {
   if (holdHere(Stage::Discovery)) return nullptr;
-  return uuid.value16() == 0x1812 ? &state().service : nullptr;
+  for (NimBLERemoteService* svc : state().discovered) {
+    if (svc->getUUID() == uuid) return svc;
+  }
+  if (state().uuidSearchFails || uuid != state().service.getUUID()) return nullptr;
+  state().discovered.push_back(&state().service);
+  return &state().service;
+}
+
+const std::vector<NimBLERemoteService*>& NimBLEClient::getServices(bool refresh) {
+  // A dropped link lists nothing, as NimBLE's retrieveServices() fails at once.
+  if (refresh) state().discovered.clear();
+  if (refresh && connected_) state().discovered = {&state().gapService, &state().service};
+  return state().discovered;
 }
 
 void NimBLEClient::setConnectTimeout(uint32_t) {}
@@ -410,11 +483,68 @@ bool NimBLEScan::stop() {
 }
 void NimBLEScan::clearResults() { retained_.clear(); }
 
+namespace {
+
+std::atomic<size_t> g_inTeardown{0};
+std::atomic<size_t> g_maxTeardownOverlap{0};
+std::atomic<uint32_t> g_teardownStallMs{0};
+std::atomic<bool> g_deinitHoldArmed{false};
+std::atomic<bool> g_deinitHeld{false};
+std::atomic<bool> g_deinitReleased{false};
+
+struct TeardownScope {
+  TeardownScope() {
+    const size_t now = ++g_inTeardown;
+    size_t seen = g_maxTeardownOverlap.load();
+    while (now > seen && !g_maxTeardownOverlap.compare_exchange_weak(seen, now)) {
+    }
+    const uint32_t stall = g_teardownStallMs.load();
+    if (stall != 0) std::this_thread::sleep_for(std::chrono::milliseconds(stall));
+  }
+  ~TeardownScope() { --g_inTeardown; }
+};
+
+}  // namespace
+
+namespace fakeble {
+
+size_t maxTeardownOverlap() { return g_maxTeardownOverlap.load(); }
+void stallTeardown(uint32_t ms) { g_teardownStallMs = ms; }
+void holdNextDeinit() {
+  g_deinitReleased = false;
+  g_deinitHeld = false;
+  g_deinitHoldArmed = true;
+}
+bool waitUntilDeinitHeld(uint32_t timeoutMs) {
+  for (uint32_t waited = 0; waited < timeoutMs; ++waited) {
+    if (g_deinitHeld.load()) return true;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  return false;
+}
+void releaseDeinit() {
+  g_deinitHoldArmed = false;
+  g_deinitReleased = true;
+}
+void resetTeardownInstrumentation() {
+  releaseDeinit();
+  g_teardownStallMs = 0;
+  g_maxTeardownOverlap = 0;
+}
+
+}  // namespace fakeble
+
 bool NimBLEDevice::init(const std::string&) {
   state().initialized = true;
   return true;
 }
 bool NimBLEDevice::deinit(bool) {
+  TeardownScope scope;
+  if (g_deinitHoldArmed.exchange(false)) {
+    g_deinitHeld = true;
+    while (!g_deinitReleased.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    g_deinitHeld = false;
+  }
   state().initialized = false;
   return true;
 }
@@ -434,11 +564,13 @@ NimBLEClient* NimBLEDevice::createClient() {
   return state().client;
 }
 bool NimBLEDevice::deleteClient(NimBLEClient* client) {
+  TeardownScope scope;
   if (client == nullptr || client != state().client) return false;
   delete client;
   state().client = nullptr;
   return true;
 }
+NimBLEClient* NimBLEDevice::getDisconnectedClient() { return state().disconnectedClient(); }
 bool NimBLEDevice::deleteBond(const NimBLEAddress&) { return true; }
 
 // --- Preferences (in-memory NVS) ------------------------------------------------

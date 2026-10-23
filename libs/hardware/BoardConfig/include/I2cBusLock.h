@@ -14,6 +14,17 @@
 // bus users (touch polling) never wait on a sleep.
 
 #include <Wire.h>
+
+#ifndef ESP_PLATFORM
+// Host tests: single-threaded, no FreeRTOS. The lock is a no-op.
+namespace freeink {
+class I2cBusLock {
+ public:
+  template <typename Bus = int>
+  explicit I2cBusLock(const Bus& = {}) {}
+};
+}  // namespace freeink
+#else
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
@@ -47,3 +58,4 @@ class I2cBusLock {
 };
 
 }  // namespace freeink
+#endif

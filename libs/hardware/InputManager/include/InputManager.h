@@ -51,6 +51,8 @@ class InputManager {
 #endif
   InputManager();
   void begin();
+  // A4: stop touch and release the shared I2C bus after all other bus users finish.
+  bool prepareForDeepSleep();
   uint8_t getState();
 
   // Call regularly from the main loop to update button and touch edge state.
@@ -174,6 +176,15 @@ class InputManager {
   // Press edge with the touch-down position normalized in the panel's native
   // frame.
   bool wasTouchPressedAt(float& nx, float& ny) const;
+  // Off-screen capacitive page keys only; excludes physical buttons sharing
+  // BTN_UP/BTN_DOWN. Bit positions match the button indices.
+  uint8_t capacitivePageButtonMask() const {
+#if FREEINK_CAP_TOUCH
+    return cstVirtualButtons;
+#else
+    return 0;
+#endif
+  }
   // True while the current touch is still a tap candidate: finger down,
   // movement remains within tap slop. Writes the original touch-down position
   // and held time.
@@ -244,6 +255,15 @@ class InputManager {
   // (~700 ms), while still down — a hold shortcut (e.g. open the reader menu).
   // Cleared each #update().
   bool wasHomeKeyLongPressed() const;
+
+  // --- Slide switch (inert unless BoardConfig::ACTIVE.input.toggleSwitch is set)
+  bool hasToggleSwitch() const { return BoardConfig::ACTIVE.input.toggleSwitch >= 0; }
+  // Debounced switch position; begin() latches the boot position without
+  // raising a change event. False on boards without a switch.
+  bool isToggleSwitchOn() const { return toggleSwitchOn; }
+  // True for the one update() in which the debounced position changed. Under
+  // beginAsync() the task consumes this edge; poll isToggleSwitchOn() instead.
+  bool wasToggleSwitchChanged() const { return toggleSwitchChangedEvent; }
 
   // Optional board hook for buttons that aren't direct GPIOs — e.g. a key
   // behind an I2C IO-expander (the LilyGo T5 S3 user button on its PCA9535). It
@@ -376,12 +396,17 @@ class InputManager {
 
   // Touch backend. Compiled only when FREEINK_CAP_TOUCH is set; dispatches on
   // BoardConfig::ACTIVE.touch.controller (CHSC6x, GT911, or FT5x06/FT6336).
+  // Each driver's definitions exist only when its FREEINK_TOUCH_* flag is set.
   void beginTouch();
   uint8_t serviceTouch();  // runs the machine; returns synthesized button mask
   void updateTouchFromIrq(unsigned long now,
                           int irqRaw);  // CHSC6x I2C poll + touch-bit gate
   void pollGt911(unsigned long now);    // GT911 polled read
   bool pollTouchHook(unsigned long now);  // injected contact from s_touchHook
+  void beginCst816s();
+  void pollCst816s(unsigned long now);
+  uint8_t cstVirtualButtons = 0;
+  unsigned long cstLastSample = 0;
   void beginFt5x06();
   void pollFt5x06(unsigned long now);
   bool ft5x06WriteReg(uint8_t reg, uint8_t value);
@@ -396,8 +421,11 @@ class InputManager {
   void pollFt6336u(unsigned long now);
   void beginGslx680();
   void pollGslx680(unsigned long now);
+  static void gslCalibrate(uint16_t rawX, uint16_t rawY, int16_t& screenX, int16_t& screenY);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);
   bool gslRead(uint8_t reg, uint8_t* buf, uint8_t len);
+  void beginTma525c();               // Onyx Picco Parade TMA525C (I2C 0x24) init/reset
+  void pollTma525c(unsigned long now);
   bool gslUploadFirmware();
 
   enum class MultiTouchGestureState : uint8_t { Idle, Tracking, Blocked };
@@ -422,6 +450,12 @@ class InputManager {
   bool classifyMultiTouchRotation(unsigned long now, bool atRelease);
   bool classifyMultiTouchPinch(unsigned long now);
   void normalizeTouchPoint(uint16_t x, uint16_t y, float& nx, float& ny) const;
+
+  void updateToggleSwitch(unsigned long now);
+  bool toggleSwitchOn = false;
+  bool toggleSwitchRaw = false;
+  bool toggleSwitchChangedEvent = false;
+  unsigned long toggleSwitchRawSince = 0;
 
   uint8_t currentState;
   uint8_t lastState;

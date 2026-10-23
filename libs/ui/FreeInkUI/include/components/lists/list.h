@@ -27,12 +27,13 @@ struct ListItem {
   bool toggle = false;
   bool toggleChecked = false;
   // Optional section heading drawn immediately before this selectable row.
-  // It shares the row's logical index and interaction value. Kept last so
-  // existing aggregate initializers remain source-compatible.
+  // It shares the row's logical index and interaction value.
   const char *sectionHeading = nullptr;
   // A status mark left of the row icon (or label), out to the screen edge, as
   // ListProps::iconsInMargin draws its icons; nothing in the row moves.
   BitmapRef marginIcon{};
+  // Emphasize this label without changing row interactivity or list-wide bold text.
+  bool bold = false;
 };
 
 // ListItem::marginIcon exists (feature test for apps built against older pins).
@@ -172,6 +173,7 @@ struct ListProps {
   Paint markerPaint = Paint::solid(Color::Black);
   int16_t markerInset = 0;     // x offset of the marker / underline start
   int16_t markerThickness = 2; // underline thickness
+  bool underlineFitsText = false; // label width plus 4px on each side
   // Glyph for SelectionMarker::Bitmap, drawn vertically centered at the
   // selected row's left edge (markerInset offset). Direct bitmap wins;
   // otherwise the asset resolves through the frame's AssetResolver.
@@ -196,6 +198,8 @@ struct ListProps {
   // Draw no row as selected while keeping selectedIndex for scrolling/nav
   // (touch screens that only show a selection after a button press).
   bool hideSelection = false;
+  // Draw toggle rows as outlined boxes with an inset fill when checked.
+  bool toggleCheckbox = false;
 };
 
 // Stateful companion to the immediate-mode list helpers in FreeInkUICore.h:
@@ -469,7 +473,9 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   ListRowLayout result;
   const int16_t rowH = props.rowHeight > 0 ? props.rowHeight : 36;
   const int16_t sidePad = props.sidePadding < 0 ? 8 : props.sidePadding;
-  const int16_t labelLh = target.lineHeight(props.labelText.font);
+  TextStyle labelStyle = props.labelText;
+  labelStyle.bold = labelStyle.bold || item.bold;
+  const int16_t labelLh = target.lineHeight(labelStyle.font);
   const BitmapRef icon = props.iconsInMargin ? BitmapRef{} : item.icon ? item.icon : resolveBitmap(assets, item.iconAsset);
   const int16_t iconSize = icon ? (props.iconSize > 0 ? props.iconSize : icon.width) : 0;
   const int16_t contentWidth = static_cast<int16_t>(width - sidePad * 2 -
@@ -483,16 +489,16 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   if (item.toggle || item.value)
     result.labelWidth = static_cast<int16_t>(result.labelWidth - result.valueWidth -
                                             props.valueInset - props.textGap);
-  if (props.balanceWrappedLabelWithValue && props.labelText.maxLines > 1 &&
+  if (props.balanceWrappedLabelWithValue && labelStyle.maxLines > 1 &&
       (item.toggle || item.value) && item.label &&
-      target.measureText(props.labelText.font, item.label, props.labelText).width > result.labelWidth) {
+      target.measureText(labelStyle.font, item.label, labelStyle).width > result.labelWidth) {
     const int16_t cap = static_cast<int16_t>(contentWidth * 3 / 5);
     if (result.labelWidth > cap) result.labelWidth = cap;
   }
   if (result.labelWidth < 0) result.labelWidth = 0;
-  if (item.label && props.labelText.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
+  if (item.label && labelStyle.maxLines > 1 && labelLh > 0 && result.labelWidth > 0) {
     const int16_t lines = static_cast<int16_t>(measureWrappedText(
-        target, item.label, props.labelText, result.labelWidth).height / labelLh);
+        target, item.label, labelStyle, result.labelWidth).height / labelLh);
     if (lines > 1) result.labelLines = static_cast<uint8_t>(lines);
   }
   const int16_t subLh = item.subtitle ? target.lineHeight(props.subtitleText.font) : 0;
@@ -519,6 +525,35 @@ inline ListRowLayout measureListRow(const DrawTarget &target, AssetResolver *ass
   const int16_t contentHeight = iconSize > textHeight ? iconSize : textHeight;
   if (result.height < contentHeight) result.height = contentHeight;
   return result;
+}
+
+// Measure only until the viewport is full; virtualized windows that omit rows cannot be centered.
+inline int listContentHeight(const DrawTarget& target, AssetResolver* assets, Rect rect, const ListProps& props) {
+  const int gap = props.rowGap > 0 ? props.rowGap : 0;
+  const int inset = props.rowInset > 0 ? props.rowInset : 0;
+  int width = rect.width - 2 * inset;
+  if (props.scrollIndicator && props.scrollIndicatorWidth > 0) {
+    const int strip = props.scrollIndicatorWidth + (props.scrollIndicatorInset > 0 ? props.scrollIndicatorInset : 0) + 2;
+    if (inset < strip) width -= strip - inset;
+  }
+  if (width <= 0) return rect.height;
+  const int headerH = props.headerRowHeight > 0 ? props.headerRowHeight : target.lineHeight(props.headerText.font) + 4;
+  int height = 0;
+  for (uint16_t i = 0; i < props.count && height < rect.height; ++i) {
+    if (!props.rowProvider && (!props.items || i < props.itemsWindowFirst ||
+        (props.itemsWindowCount && i - props.itemsWindowFirst >= props.itemsWindowCount))) return rect.height;
+    ListItem scratch;
+    if (props.rowProvider) props.rowProvider(props.rowProviderCtx, i, scratch);
+    const ListItem& item = props.rowProvider ? scratch : props.items[i - props.itemsWindowFirst];
+    if (i) height += gap;
+    if (item.isHeader) {
+      height += headerH + (i ? props.sectionGap : 0);
+    } else {
+      if (item.sectionHeading && item.sectionHeading[0]) height += headerH + gap + (i ? props.sectionGap : 0);
+      height += measureListRow(target, assets, static_cast<int16_t>(width), props, item).height;
+    }
+  }
+  return height;
 }
 
 template <size_t MaxInteractions>
@@ -637,6 +672,8 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       cursorY = static_cast<int16_t>(cursorY + headerH + rowGap);
       continue;
     }
+    TextStyle labelStyle = props.labelText;
+    labelStyle.bold = labelStyle.bold || item.bold;
     const ListRowLayout layout = measureListRow(frame.target(), frame.assets(),
                                                  rowArea.width, props, item);
     const int16_t itemH = layout.height;
@@ -696,7 +733,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // selection pill wraps the text instead of spanning the rect.
       const int16_t labelW =
           frame.target()
-              .measureText(props.labelText.font, item.label, props.labelText)
+              .measureText(labelStyle.font, item.label, labelStyle)
               .width;
       const int16_t hugW = static_cast<int16_t>(labelW + sidePad * 2);
       if (hugW < row.width)
@@ -770,8 +807,7 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
     // Slot layout (mirrors settingRow): the label owns a "title band" and the
     // icon and value align to it; the subtitle spans the full content width
     // under the band so it never collides with the value.
-    TextStyle labelStyle =
-        textStyleWithForeground(props.labelText, style.foreground);
+    labelStyle = textStyleWithForeground(labelStyle, style.foreground);
     // The band holds every label line the height pre-pass measured (usually
     // one); the subtitle and the row's growth both follow it.
     const int16_t labelBlockH = layout.labelHeight;
@@ -839,38 +875,39 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       // The switch draws in row-foreground ink with the foreground's opposite
       // as "paper", so it inverts along with the row when selected.
       const Paint fg = style.foreground;
-      const bool fgWhite =
-          fg.kind == PaintKind::Solid && fg.color == Color::White;
+      const bool fgWhite = fg.kind == PaintKind::Solid && fg.color == Color::White;
       const Paint paper = Paint::solid(fgWhite ? Color::Black : Color::White);
-      const uint8_t trackRadius = static_cast<uint8_t>(
-          props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
-      frame.target().fill(toggleRect, item.toggleChecked ? fg : paper,
-                          trackRadius);
-      if (props.toggleBorderWidth > 0) {
-        frame.target().stroke(toggleRect, fg, props.toggleBorderWidth,
-                              trackRadius);
+      if (props.toggleCheckbox) {
+        const int16_t size = static_cast<int16_t>((togW < togH ? togW : togH) - 6);
+        const Rect box{static_cast<int16_t>(toggleRect.right() - size - 3),
+                       static_cast<int16_t>(toggleRect.y + (togH - size) / 2), size, size};
+        frame.target().stroke(box, fg, 2, 2);
+        if (item.toggleChecked) {
+          const int16_t inset = static_cast<int16_t>(size / 4);
+          const Rect inner = box.inset(Insets{inset, inset, inset, inset});
+          frame.target().fill(inner, fg, 2);
+        }
+      } else {
+        const uint8_t trackRadius = static_cast<uint8_t>(props.toggleRadius > togH / 2 ? togH / 2 : props.toggleRadius);
+        frame.target().fill(toggleRect, item.toggleChecked ? fg : paper, trackRadius);
+        if (props.toggleBorderWidth > 0) {
+          frame.target().stroke(toggleRect, fg, props.toggleBorderWidth, trackRadius);
+        }
+        const int16_t knobInset = props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
+        const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
+        if (knobH > 0) {
+          Rect knob{static_cast<int16_t>(item.toggleChecked ? toggleRect.right() - knobInset - knobH
+                                                            : toggleRect.x + knobInset),
+                    static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
+          const uint8_t knobRadius =
+              static_cast<uint8_t>(props.toggleKnobRadius > knobH / 2 ? knobH / 2 : props.toggleKnobRadius);
+          frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
+        }
       }
-      const int16_t knobInset =
-          props.toggleKnobInset < 0 ? 0 : props.toggleKnobInset;
-      const int16_t knobH = static_cast<int16_t>(togH - knobInset * 2);
-      if (knobH > 0) {
-        Rect knob{
-            static_cast<int16_t>(item.toggleChecked
-                                     ? toggleRect.right() - knobInset - knobH
-                                     : toggleRect.x + knobInset),
-            static_cast<int16_t>(toggleRect.y + knobInset), knobH, knobH};
-        const uint8_t knobRadius = static_cast<uint8_t>(
-            props.toggleKnobRadius > knobH / 2 ? knobH / 2
-                                               : props.toggleKnobRadius);
-        frame.target().fill(knob, item.toggleChecked ? paper : fg, knobRadius);
-      }
-      availW = static_cast<int16_t>(availW - togW - props.valueInset -
-                                    props.textGap);
-      if (props.rtl)
-        labelX = static_cast<int16_t>(band.x + band.width - availW);
+      availW = static_cast<int16_t>(availW - togW - props.valueInset - props.textGap);
+      if (props.rtl) labelX = static_cast<int16_t>(band.x + band.width - availW);
     } else if (item.value) {
-      TextStyle valueStyle =
-          textStyleWithForeground(props.valueText, style.foreground);
+      TextStyle valueStyle = textStyleWithForeground(props.valueText, style.foreground);
       valueStyle.align = props.rtl ? TextAlign::Left : TextAlign::Right;
       const int16_t valueW = layout.valueWidth;
       const int16_t valueX = props.rtl
@@ -910,14 +947,23 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
       if (props.selectionMarker == SelectionMarker::Underline) {
         // RTL mirrors which edge carries markerInset's extra gap, matching
         // the label's own trailing/leading swap above.
-        const int16_t underlineX = props.rtl
+        int16_t underlineX = props.rtl
             ? static_cast<int16_t>(row.x + sidePad)
             : static_cast<int16_t>(row.x + sidePad + props.markerInset);
+        int16_t underlineWidth = static_cast<int16_t>(row.width - sidePad * 2 - props.markerInset);
+        if (props.underlineFitsText && item.label && availW > 0) {
+          const int16_t textWidth = measureWrappedText(frame.target(), item.label, labelStyle, availW).width;
+          int textX = labelX;
+          if (labelStyle.align == TextAlign::Center) textX += (availW - textWidth) / 2;
+          else if (labelStyle.align == TextAlign::Right) textX += availW - textWidth;
+          underlineX = static_cast<int16_t>(textX - 4 > row.x ? textX - 4 : row.x);
+          const int right = textX + textWidth + 4 < row.right() ? textX + textWidth + 4 : row.right();
+          underlineWidth = static_cast<int16_t>(right - underlineX);
+        }
         frame.target().fill(
             Rect{underlineX,
                  static_cast<int16_t>(row.bottom() - props.markerThickness),
-                 static_cast<int16_t>(row.width - sidePad * 2 -
-                                      props.markerInset),
+                 underlineWidth,
                  props.markerThickness},
             props.markerPaint);
       } else if (props.selectionMarker == SelectionMarker::Bitmap) {

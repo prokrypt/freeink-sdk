@@ -43,7 +43,7 @@ constexpr size_t STREAM_CHUNK_BYTES = 400;
 uint8_t streamChunk[STREAM_CHUNK_BYTES];
 
 template <typename FillRow>
-void streamRows(EpdBus& bus, const uint16_t visibleRows, const uint16_t totalRows, const uint16_t wb,
+void streamRows(EpdBus::Transaction& txn, const uint16_t visibleRows, const uint16_t totalRows, const uint16_t wb,
                 FillRow&& fillRow) {
   const uint16_t rowsPerChunk = static_cast<uint16_t>(STREAM_CHUNK_BYTES / wb);
   uint16_t pending = 0;
@@ -55,11 +55,11 @@ void streamRows(EpdBus& bus, const uint16_t visibleRows, const uint16_t totalRow
       memset(dst, 0xFF, wb);
     }
     if (++pending == rowsPerChunk) {
-      bus.rawWriteBytes(streamChunk, static_cast<uint16_t>(pending * wb));
+      txn.writeBytes(streamChunk, static_cast<uint16_t>(pending * wb));
       pending = 0;
     }
   }
-  if (pending) bus.rawWriteBytes(streamChunk, static_cast<uint16_t>(pending * wb));
+  if (pending) txn.writeBytes(streamChunk, static_cast<uint16_t>(pending * wb));
 }
 // UC8179 command set (UC8179 datasheet + OEM UC8179_800x480 stream, via Ghidra).
 constexpr uint8_t CMD_PANEL_SETTING = 0x00;       // PSR
@@ -772,8 +772,8 @@ void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, b
   const uint16_t h = _h;
   const uint32_t startUs = micros();
   bus.cmd(ramCmd);
-  bus.beginTxn();
-  streamRows(bus, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
+  auto txn = bus.beginTxn();
+  streamRows(txn, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
     const uint8_t* src = fb + static_cast<uint32_t>(h - 1 - i) * wb;
     if (invert) {
       for (uint16_t x = 0; x < wb; x++) dst[x] = static_cast<uint8_t>(~src[x]);
@@ -781,7 +781,7 @@ void Uc8179Driver::streamPlane(EpdBus& bus, uint8_t ramCmd, const uint8_t* fb, b
       memcpy(dst, src, wb);
     }
   });
-  bus.endTxn();
+  txn.end();
   _spiUs += micros() - startUs;
   _spiPlanes++;
 }
@@ -791,12 +791,12 @@ void Uc8179Driver::streamPlaneXor(EpdBus& bus, uint8_t ramCmd, const uint8_t* lh
   const uint16_t h = _h;
   const uint32_t startUs = micros();
   bus.cmd(ramCmd);
-  bus.beginTxn();
-  streamRows(bus, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
+  auto txn = bus.beginTxn();
+  streamRows(txn, _h, _tresH, _wb, [&](const uint16_t i, uint8_t* dst) {
     const uint32_t offset = static_cast<uint32_t>(h - 1 - i) * wb;
     for (uint16_t x = 0; x < wb; x++) dst[x] = static_cast<uint8_t>(lhs[offset + x] ^ rhs[offset + x]);
   });
-  bus.endTxn();
+  txn.end();
   _spiUs += micros() - startUs;
   _spiPlanes++;
 }
