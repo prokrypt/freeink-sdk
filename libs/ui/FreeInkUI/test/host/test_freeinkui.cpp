@@ -4,6 +4,7 @@
 
 #include <FreeInkUI.h>
 #include <FreeInkApp.h>
+#include <FreeInkUILayout.h>
 #include <FreeInkUIDisplayTarget.h>
 
 #include <cstdio>
@@ -54,6 +55,7 @@ class FakeDrawTarget : public DrawTarget {
     FontId font = 0;
     TextAlign align = TextAlign::Left;
     const uint8_t* bitmapData = nullptr;
+    bool bold = false;
   };
 
   Op ops[256]{};
@@ -61,13 +63,15 @@ class FakeDrawTarget : public DrawTarget {
   mutable bool measuredForbiddenLabel = false;
   bool drewForbiddenLabel = false;
   int16_t charWidth = 6;
+  int16_t boldCharWidth = 0;
   int16_t lineH = 12;
   int16_t fontLineH[DisplayTarget::FONT_SLOTS]{};
 
-  Size measureText(FontId font, const char* text, TextStyle) const override {
+  Size measureText(FontId font, const char* text, TextStyle style) const override {
     if (text != nullptr && std::strcmp(text, "must-not-measure") == 0)
       measuredForbiddenLabel = true;
-    return Size{static_cast<int16_t>(charWidth * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
+    const int16_t width = style.bold && boldCharWidth > 0 ? boldCharWidth : charWidth;
+    return Size{static_cast<int16_t>(width * static_cast<int16_t>(std::strlen(text))), lineHeight(font)};
   }
   int16_t lineHeight(FontId font) const override {
     return font < DisplayTarget::FONT_SLOTS && fontLineH[font] > 0 ? fontLineH[font] : lineH;
@@ -93,6 +97,7 @@ class FakeDrawTarget : public DrawTarget {
     if (opCount) {
       ops[opCount - 1].font = style.font;
       ops[opCount - 1].align = style.align;
+      ops[opCount - 1].bold = style.bold;
     }
   }
   void bitmap(Rect rect, BitmapRef bitmap, BitmapMode, Paint foreground, Rotation rotation) override {
@@ -2589,6 +2594,25 @@ void testThemePrimitiveParity() {
   }
   CHECK(sawUnderline);
 
+  menu.underlineFitsText = true;
+  for (const auto align : {TextAlign::Left, TextAlign::Center, TextAlign::Right}) {
+    FakeDrawTarget fitted;
+    Frame<16> fittedFrame(fitted, device, input, interactions);
+    menu.labelText.align = align;
+    list(fittedFrame, Rect{0, 0, 480, 100}, menu);
+    bool sawFitted = false;
+    for (size_t i = 0; i < fitted.opCount; ++i) {
+      const auto& op = fitted.ops[i];
+      if (op.kind != FakeDrawTarget::Op::Fill || op.rect.height != 3 || op.rect.bottom() != 80) continue;
+      CHECK_EQ(op.rect.width, 56);
+      CHECK_EQ(op.rect.x, align == TextAlign::Left ? 6 : align == TextAlign::Center ? 212 : 418);
+      sawFitted = true;
+    }
+    CHECK(sawFitted);
+  }
+  menu.underlineFitsText = false;
+  menu.labelText.align = TextAlign::Left;
+
   // Triangle selection marker (v1 Triangle style: 12x18 at the row edge).
   FakeDrawTarget draw2;
   Frame<16> frame2(draw2, device, input, interactions);
@@ -2787,6 +2811,62 @@ void testListSectionHeaders() {
   CHECK_EQ(secondHeaderY, 130);
 }
 
+void testListBoldLabels() {
+  for (const bool listBold : {false, true}) {
+    FakeDrawTarget draw;
+    draw.boldCharWidth = 10;
+    DeviceContext device = makeDevice();
+    device.minTouchSize = 0;
+    InputSnapshot input;
+    InteractionBuffer<16> interactions;
+    Frame<16> frame(draw, device, input, interactions);
+    ListItem items[2]{};
+    items[0].label = items[1].label = "Group title";
+    items[0].bold = true;
+    items[0].actionValue = 7;
+    items[1].actionValue = 8;
+    ListProps props;
+    props.items = items;
+    props.count = 2;
+    props.action = 17;
+    props.rowHeight = 20;
+    props.rowGap = 0;
+    props.sidePadding = 0;
+    props.scrollIndicator = false;
+    props.labelText.maxLines = 2;
+    props.labelText.bold = listBold;
+
+    // The regular title fits; its wider bold form wraps onto two lines.
+    CHECK_EQ(measureListRow(draw, nullptr, 72, props, items[0]).labelLines, 2);
+    CHECK_EQ(measureListRow(draw, nullptr, 72, props, items[1]).labelLines, listBold ? 2 : 1);
+    list(frame, Rect{0, 0, 72, 160}, props);
+    CHECK_EQ(interactions.count(), 2u);
+    CHECK_EQ(interactions.data()[0].rect.height, 32);
+    CHECK_EQ(interactions.data()[1].rect.y, 32);
+    CHECK_EQ(interactions.data()[1].rect.height, listBold ? 32 : 20);
+    size_t labels = 0;
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      if (draw.ops[i].kind != FakeDrawTarget::Op::Text) continue;
+      CHECK_EQ(draw.ops[i].bold, labels == 0 || listBold);
+      ++labels;
+    }
+    CHECK_EQ(labels, 2u);
+    InputSnapshot tap;
+    tap.touchReleased = true;
+    tap.touchX = 10;
+    tap.touchY = 10;
+    CHECK_EQ(interactions.route(tap).value, 7);
+
+    // Hug-content rows must use the same effective font weight for hit width.
+    interactions.clear();
+    props.hugContents = true;
+    props.labelText.maxLines = 1;
+    list(frame, Rect{0, 0, 200, 160}, props);
+    CHECK_EQ(interactions.data()[0].rect.width, 110);
+    CHECK_EQ(interactions.data()[1].rect.width, listBold ? 110 : 66);
+  }
+}
+
 void testListWrappedLabelHeights() {
   // Per-item height: a wrapping label grows its row by the lines it USES,
   // not by maxLines; a subtitle follows the wrapped label band; and the
@@ -2886,6 +2966,37 @@ void testListWrappedLabelHeights() {
       if (op.kind == FakeDrawTarget::Op::Fill && op.rect.width == 480 && op.rect.y == 0) row0H = op.rect.height;
     }
     CHECK_EQ(row0H, 52);  // 12 label + 24 wrapped subtitle + 16 base padding
+  }
+
+  // File Transfer: the icon centers beside the title and wrapped description.
+  {
+    FakeDrawTarget draw;
+    draw.lineH = 27;
+    Frame<16> frame(draw, device, input, interactions);
+    static const uint8_t pixels[128]{};
+    ListItem item{};
+    item.label = "File Transfer";
+    item.subtitle = longLabel;
+    item.icon = {pixels, 32, 32, BitmapFormat::BW1, false};
+    ListProps props;
+    props.items = &item;
+    props.count = 1;
+    props.rowHeight = 64;
+    props.iconSize = 32;
+    props.subtitleText.maxLines = 2;
+    list(frame, Rect{0, 0, 480, 400}, props);
+    Rect icon{}, title{}, description{};
+    for (size_t i = 0; i < draw.opCount; ++i) {
+      const auto& op = draw.ops[i];
+      if (op.kind == FakeDrawTarget::Op::Bitmap) icon = op.rect;
+      if (op.kind == FakeDrawTarget::Op::Text) {
+        if (title.empty()) title = op.rect;
+        else description = op.rect;
+      }
+    }
+    CHECK_EQ(description.height, 54);
+    CHECK_EQ(icon.y, title.y + (title.height + description.height - icon.height) / 2);
+    CHECK_EQ(title.x, description.x);
   }
 
   // Touch-sized gate: without a subtitle, a 44px row already fits two 12px
@@ -3634,6 +3745,59 @@ void testGermanAndFrenchLetters() {
   CHECK(std::strcmp(buf, "\xc3\xaatre") == 0);  // être
 }
 
+void testCompactLayoutsMatchBuiltin() {
+  // buildKeyboardLayout() must be builtinKeyboardLayout() without the tables:
+  // every layer of every layout, one id past the last as the unknown-id path,
+  // compared field by field. This is what keeps the compact strings and the
+  // expanded tables from drifting apart.
+  const auto sameText = [](const char* a, const char* b) {
+    return a == b || (a && b && std::strcmp(a, b) == 0);
+  };
+  KeyboardLayoutBuffer buffer;
+  size_t keysCompared = 0;
+  for (uint8_t raw = 0; raw <= static_cast<uint8_t>(KeyboardLayoutId::ArabicAr) + 1; ++raw) {
+    const auto id = static_cast<KeyboardLayoutId>(raw);
+    for (uint8_t flags = 0; flags < 16; ++flags) {
+      const bool shifted = flags & 1, symbols = flags & 2, numbers = flags & 4, lang = flags & 8;
+      const KeyboardLayout& want = builtinKeyboardLayout(id, shifted, symbols, numbers, lang);
+      const KeyboardLayout& got = buildKeyboardLayout(buffer, id, shifted, symbols, numbers, lang);
+      CHECK_EQ(got.rowCount, want.rowCount);
+      if (got.rowCount != want.rowCount) continue;
+      for (uint8_t r = 0; r < want.rowCount; ++r) {
+        const KeyboardRow& wr = want.rows[r];
+        const KeyboardRow& gr = got.rows[r];
+        CHECK_EQ(gr.count, wr.count);
+        CHECK_EQ(gr.insetUnits, wr.insetUnits);
+        CHECK_EQ(gr.independentKeyWidth, wr.independentKeyWidth);
+        if (gr.count != wr.count) continue;
+        for (uint8_t c = 0; c < wr.count; ++c) {
+          const KeyboardKey& w = wr.keys[c];
+          const KeyboardKey& g = gr.keys[c];
+          CHECK(sameText(g.label, w.label));
+          CHECK(sameText(g.output, w.output));
+          CHECK(sameText(g.alt, w.alt));
+          CHECK(g.kind == w.kind);
+          CHECK_EQ(g.state, w.state);
+          CHECK_EQ(g.value, w.value);
+          CHECK_EQ(g.widthUnits, w.widthUnits);
+          CHECK_EQ(g.enabled, w.enabled);
+          ++keysCompared;
+        }
+      }
+    }
+  }
+  CHECK(keysCompared > 6000);  // the loops above really ran over every layer
+
+  // Each build owns its buffer: a second buffer leaves the first one's layout
+  // untouched, and building into the same buffer again reuses it in place.
+  KeyboardLayoutBuffer other;
+  const KeyboardLayout& ru = buildKeyboardLayout(buffer, KeyboardLayoutId::CyrillicRu, false, false, true);
+  buildKeyboardLayout(other, KeyboardLayoutId::QwertzDe, true);
+  CHECK(sameText(keyboardOutputFor(ru, 0x439), "\xd0\xb9"));  // й
+  CHECK(sameText(keyboardAltOutputFor(ru, 0x435), "\xd1\x91"));  // е -> ё
+  CHECK(&buildKeyboardLayout(buffer, KeyboardLayoutId::QwertyEn) == &buffer.layout);
+}
+
 void testKeyboardUniformRowWidths() {
   DeviceContext device = makeDevice(800, 480);
   InputSnapshot input;
@@ -3710,6 +3874,40 @@ void testKeyboardUniformRowWidths() {
     CHECK_EQ(interactions.data()[30].rect.width, characterWidth);  // z
     CHECK_EQ(interactions.data()[36].rect.width, characterWidth);  // m
     CHECK_EQ(interactions.data()[37].rect.width, interactions.data()[29].rect.width);  // Delete
+  }
+}
+
+void testKeyboardOuterControlAlignment() {
+  for (const int16_t width : {320, 480, 601, 800}) {
+    for (const bool shifted : {false, true}) {
+      for (const bool langKey : {false, true}) {
+        FakeDrawTarget draw;
+        DeviceContext device = makeDevice(width, 400);
+        InputSnapshot input;
+        InteractionBuffer<64> interactions;
+        Frame<64> frame(draw, device, input, interactions);
+        KeyboardProps props;
+        props.layout = &builtinKeyboardLayout(KeyboardLayoutId::QwertyEn, shifted, false, true, langKey);
+        props.keyAction = 1;
+        keyboard(frame, Rect{0, 0, width, 350}, props);
+
+        Rect keys[42]{};
+        size_t count = 0;
+        for (size_t i = 0; i < draw.opCount; ++i) {
+          if (draw.ops[i].kind == FakeDrawTarget::Op::Stroke && count < 42) keys[count++] = draw.ops[i].rect;
+        }
+        CHECK_EQ(count, langKey ? 42u : 41u);
+        CHECK_EQ(keys[29].x, keys[0].x);                    // Shift / 1
+        CHECK_EQ(keys[37].right(), keys[9].right());        // Delete / 0
+        CHECK_EQ(keys[38].x, keys[0].x);                    // Mode / 1
+        CHECK_EQ(keys[count - 1].right(), keys[9].right()); // OK / 0
+        CHECK_EQ(keys[30].x - keys[29].right(), props.gap);
+        CHECK_EQ(keys[37].x - keys[36].right(), props.gap);
+        CHECK_EQ(keys[39].x - keys[38].right(), props.gap);
+        CHECK_EQ(keys[count - 1].x - keys[count - 2].right(), props.gap);
+        for (size_t i = 30; i <= 36; ++i) CHECK_EQ(keys[i].width, keys[0].width);
+      }
+    }
   }
 }
 
@@ -5692,7 +5890,138 @@ void testPublicationPage() {
   }
 }
 
+void testPublicationPageDescriptionPainter() {
+  struct Painted {
+    Rect rect{};
+    bool claim = true;
+  };
+  FakeDrawTarget draw;
+  DeviceContext device;
+  device.width = 480;
+  device.height = 800;
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  PublicationPageProps props;
+  props.book.title = "Title";
+  props.description = "must-not-measure";
+  props.primary.label = "Install";
+  props.primary.action = 91;
+  Painted painted;
+  props.descriptionPainterUserData = &painted;
+  props.descriptionPainter = [](DrawTarget&, Rect rect, const PublicationPageProps&, void* user) {
+    auto* p = static_cast<Painted*>(user);
+    p->rect = rect;
+    return p->claim;
+  };
+  publicationPage(frame, device.screen(), props);
+  CHECK(!draw.drewForbiddenLabel);
+  CHECK(painted.rect.height > 0 && painted.rect.width > 0);
+  CHECK(painted.rect.bottom() <= hits.data()[0].rect.y);  // never under the action button
+
+  // Declining falls back to the plain-text description.
+  painted.claim = false;
+  hits.clear();
+  publicationPage(frame, device.screen(), props);
+  CHECK(draw.drewForbiddenLabel);
+
+  // A painter alone (no text description) still gets the area.
+  props.description = nullptr;
+  painted = Painted{};
+  hits.clear();
+  publicationPage(frame, device.screen(), props);
+  CHECK(painted.rect.height > 0);
+}
+
+void testComponentStyleOverrides() {
+  ComponentStyle style;
+  style.text.fields = TextStyleOverride::Bold | TextStyleOverride::Alignment;
+  style.text.value.bold = false;
+  style.text.value.align = TextAlign::Center;
+  style.selected.fields =
+      BoxStyleOverride::Background | BoxStyleOverride::BorderWidth;
+  style.selected.background = Color::Transparent;
+  style.selected.borderWidth = 0;
+  TextStyle text;
+  text.bold = true;
+  text.maxLines = 3;
+  style.text.apply(text);
+  CHECK(!text.bold);
+  CHECK_EQ(text.maxLines, 3);
+  CHECK(text.align == TextAlign::Center);
+  StyleSet styles = defaultListRowStyles();
+  styles.selected.borderWidth = 3;
+  style.apply(styles);
+  CHECK(styles.normal.background.color == Color::White);
+  CHECK(styles.selected.background.kind == PaintKind::None);
+  CHECK_EQ(styles.selected.borderWidth, 0);
+  style.contentAlign = Align::Center;
+  CHECK_EQ(style.alignContent(Rect{0, 10, 100, 200}, 60).y, 80);
+  CHECK_EQ(style.alignContent(Rect{0, 10, 100, 200}, 300).height, 200);
+
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  InteractionBuffer<16> hits;
+  Frame<16> frame(draw, device, input, hits);
+  ThemeTokens theme = defaultThemeTokens();
+  Screen<16> screen(frame, theme);
+  screen.setComponentStyle(&style);
+  ListProps props;
+  auto resolved = screen.resolveListProps(props);
+  CHECK(resolved.labelText.align == TextAlign::Center);
+  CHECK(resolved.rowStyles.selected.background.kind == PaintKind::None);
+  screen.setComponentStyle(nullptr);
+  resolved = screen.resolveListProps(props);
+  CHECK(resolved.labelText.align == theme.bodyText.align);
+  CHECK(resolved.rowStyles.selected.background.kind == PaintKind::Solid);
+  ListItem item{};
+  item.label = "title";
+  item.subtitle = "aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa aaaaaaaaa";
+  props.items = &item;
+  props.count = 1;
+  props.rowHeight = 30;
+  props.subtitleText.maxLines = 2;
+  props.sidePadding = 0;
+  props.scrollIndicator = false;
+  CHECK_EQ(listContentHeight(draw, nullptr, Rect{0, 0, 180, 200}, props), 42);
+  CHECK(listContentHeight(draw, nullptr, Rect{0, 0, 180, 40}, props) >= 40);
+}
+
+void testRuntimeGridSpans() {
+  LayoutNode children[2];
+  children[0].id = "wide";
+  children[0].columnSpan = 2;
+  children[1].id = "side";
+  children[1].column = 2;
+  children[1].rowSpan = 2;
+  LayoutNode grid;
+  grid.kind = LayoutKind::Grid;
+  grid.columns = 3;
+  grid.rows = 2;
+  grid.gap = 4;
+  grid.children = children;
+  grid.childCount = 2;
+  int emitted = 0;
+  layoutTree(grid, LayoutRect{10, 20, 308, 204},
+             [&](const char *id, LayoutRect rect) {
+               ++emitted;
+               if (std::strcmp(id, "wide") == 0) {
+                 CHECK_EQ(rect.x, 10);
+                 CHECK_EQ(rect.width, 204);
+                 CHECK_EQ(rect.height, 100);
+               } else {
+                 CHECK_EQ(rect.x, 218);
+                 CHECK_EQ(rect.width, 100);
+                 CHECK_EQ(rect.height, 204);
+               }
+             });
+  CHECK_EQ(emitted, 2);
+}
+
 int main() {
+  testComponentStyleOverrides();
+  testRuntimeGridSpans();
   testRect();
   testDisplayTarget();
   testDisplayTargetAlphaFont();
@@ -5753,6 +6082,7 @@ int main() {
   testThemePrimitiveParity();
   testRotationAndBitmapSampling();
   testListSectionHeaders();
+  testListBoldLabels();
   testListWrappedLabelHeights();
   testCrossInkSleepScreenComposition();
   testCoverCarousel();
@@ -5768,7 +6098,9 @@ int main() {
   testQwertyKeyboardComponent();
   testLocalizedKeyboardLayout();
   testGermanAndFrenchLetters();
+  testCompactLayoutsMatchBuiltin();
   testKeyboardUniformRowWidths();
+  testKeyboardOuterControlAlignment();
   testWideScriptNumberRowWidth();
   testKeyboardBackground();
   testSymbolKeyboardPages();
@@ -5804,6 +6136,7 @@ int main() {
   testCapsuleSlider();
   testSliderRow();
   testPublicationPage();
+  testPublicationPageDescriptionPainter();
   testCatalogShelves();
   testPublicationStylingAndButtons();
   testTileGrid();

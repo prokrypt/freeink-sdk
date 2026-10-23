@@ -19,6 +19,33 @@ namespace freeink {
 
 bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   if (pins.busWidth == 0) return false;
+  // The sleep path may hold the bus pads (Picco); a held pad ignores the slot setup.
+  for (const int8_t pin : {pins.clk, pins.cmd, pins.d0, pins.d1, pins.d2, pins.d3}) {
+    if (pin >= 0) gpio_hold_dis(static_cast<gpio_num_t>(pin));
+  }
+
+#if FREEINK_DEVICE_METALIO_EINK4
+  if (BoardConfig::isMetalioEInk4()) {
+    // Vendor InitializeSdCard(): DAT3/CD must stay high during CMD0 even in
+    // 1-bit mode. GPIO46 has a reset pull-down and isn't touched by the slot
+    // driver when d3 is NC. Keep it INPUT, never add it as an SDMMC output.
+    gpio_hold_dis(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO));
+    gpio_config_t dat3 = {};
+    dat3.pin_bit_mask = uint64_t(1) << metalio::SD_DAT3_GPIO;
+    dat3.mode = GPIO_MODE_INPUT;
+    dat3.pull_up_en = GPIO_PULLUP_ENABLE;
+    dat3.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    dat3.intr_type = GPIO_INTR_DISABLE;
+    const esp_err_t err = gpio_config(&dat3);
+    if (err != ESP_OK) {
+      if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3 pull-up failed: %s\n", millis(), esp_err_to_name(err));
+      return false;
+    }
+    delay(1);
+    if (Serial) Serial.printf("[%lu] [SD] Metalio DAT3/CD GPIO46=%d (expected 1)\n", millis(),
+                              gpio_get_level(static_cast<gpio_num_t>(metalio::SD_DAT3_GPIO)));
+  }
+#endif
 
   // Host config matches the OEM (recovered from app1's mountSD via Ghidra): full
   // default capability flags (0x37) with the actual width selected via slot.width
@@ -91,15 +118,18 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   const bool warmStart = esp_reset_reason() == ESP_RST_SW;
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
-    if (sdPwr >= 0 && warmStart && attempt == 0) {
+    const bool powerCycle = BoardConfig::ACTIVE.sd.powerCycleOnMount;
+    if (sdPwr >= 0 && powerCycle && warmStart && attempt == 0) {
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
-    } else if (sdPwr >= 0) {
+    } else if (sdPwr >= 0 && powerCycle) {
       if (warmStart && attempt == 1)
         LOG_ERR("SD", "SDMMC warm mount failed (%s), power-cycling", esp_err_to_name(mountErr));
       digitalWrite(sdPwr, HIGH);
       delay(80);
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
       delay(120);
+    } else if (sdPwr >= 0) {
+      digitalWrite(sdPwr, BoardConfig::ACTIVE.sd.powerActiveHigh ? HIGH : LOW);  // keep the rail on
     }
     esp_err_t e = sdmmc_card_init(&host, card);
     if (e != ESP_OK && card->csd.capacity == 0) {

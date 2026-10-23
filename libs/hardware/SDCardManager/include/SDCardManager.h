@@ -61,6 +61,11 @@ class SDCardManager {
   bool remove(const char* path) { return vol().remove(path); }
   bool rmdir(const char* path) { return vol().rmdir(path); }
   bool rename(const char* path, const char* newPath) { return vol().rename(path, newPath); }
+  // Move a fully written temp file over `path`. FAT rename does not replace an
+  // existing file, so the old one is removed first.
+  bool replaceFile(const char* tmpPath, const char* path) {
+    return (!vol().exists(path) || vol().remove(path)) && vol().rename(tmpPath, path);
+  }
 
   bool openFileForRead(const char* moduleName, const char* path, FsFile& file);
   bool openFileForRead(const char* moduleName, const std::string& path, FsFile& file);

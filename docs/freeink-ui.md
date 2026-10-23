@@ -854,6 +854,25 @@ The Latin locale layouts follow their printed keyboards. QWERTZ German carries
 has a single long-press alternate, so letters beyond one per key (French â, û,
 ë, ï, œ) are not on the built-in layers.
 
+`builtinKeyboardLayout` keeps every layer of every built-in layout expanded in
+flash, about 16 KB on a 32-bit target. `buildKeyboardLayout` takes the same
+arguments and returns the same layout, key for key, but builds it from a
+compact description (about 2 KB for all layouts) into a `KeyboardLayoutBuffer`
+the app owns:
+
+```cpp
+// A member of the screen that shows the keyboard (~1.2 KB), rebuilt whenever
+// shift, the symbol pages or the script change.
+freeink::ui::KeyboardLayoutBuffer layoutBuffer;
+
+keyboard.layout = &freeink::ui::buildKeyboardLayout(layoutBuffer, freeink::ui::KeyboardLayoutId::CyrillicRu,
+                                                    shifted, symbols, /*numberRow=*/true, /*langKey=*/true);
+```
+
+A firmware that only ever builds its layers this way, and never reaches
+`builtinKeyboardLayout` (directly, or through `KeyboardEntry` or FreeInkApp's
+`qwertyKeyboard`), does not link the expanded tables.
+
 An app that reaches more than one script sets `builtinKeyboardLayout`'s
 `langKey` flag and a `KeyboardProps::langAction`, which puts a script-switch key
 in the bottom row. It draws a globe and takes no label of its own: which layout
@@ -1643,3 +1662,25 @@ widest natural tab. Slot bounds include the tab insets, and touch targets and
 selection indicators follow the slots. A single tab is centered. If the slots
 and minimum `gap` do not fit, the bar falls back to equal-width slots.
 Existing default layouts are unchanged. Neither option allocates memory.
+
+
+### Runtime composition and compact style overrides
+
+`FreeInkUILayout.h` supports fixed/flexible linear containers and equal-track
+runtime grids. Set `LayoutNode::kind = LayoutKind::Grid`, `columns`, and `rows`;
+children carry zero-based `column`/`row` and positive spans. Spanned rectangles
+include internal gaps. Grid children may themselves be linear containers. Layout
+is allocation-free and uses 32-bit intermediate coordinates. Callers validate
+configuration; invalid/out-of-bounds placements produce no slot.
+
+`FreeInkUIComponentStyle.h` supplies compact text and state-box overrides with
+explicit presence masks. Applying false, zero, or transparent replaces the
+inherited value; absent fields preserve it. `Screen::setComponentStyle` borrows
+screen-lifetime storage, applies overrides to list typography/state styles and
+headers, and supports alignment of list blocks that fit the viewport (including wrapped rows).
+The style pointer defaults to null, preserving existing callers. Layout owners
+apply `padding` to their content bounds before routing and drawing.
+
+`fitCoverGrid` computes fitting cover/row dimensions from the existing grid
+properties, available rectangle, line height and maximum cover height. It leaves
+text line-count policy to the caller and allocates no buffers.
