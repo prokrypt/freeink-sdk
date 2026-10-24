@@ -114,18 +114,26 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // block I/O works, and the gate is left in the exact LOW state that read succeeded under.
   // After a software reset the card stayed powered and was working, so the
   // first attempt skips the 200 ms power cycle; CMD0 in sdmmc_card_init resets
-  // it. A failure falls through to the power-cycled attempts below.
-  const bool warmStart = esp_reset_reason() == ESP_RST_SW;
+  // it. After a deep sleep the enable was held off all through the sleep
+  // (PowerManager::powerDownRailsForSleep), far longer than the cycle's 80 ms
+  // off half, so the first attempt skips that half. A failure falls through to
+  // the full power-cycled attempts below.
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  const bool warmStart = resetReason == ESP_RST_SW;
+  const bool offThroughSleep = resetReason == ESP_RST_DEEPSLEEP;
   esp_err_t mountErr = ESP_FAIL;
   for (int attempt = 0; attempt < 4; attempt++) {
     const bool powerCycle = BoardConfig::ACTIVE.sd.powerCycleOnMount;
     if (sdPwr >= 0 && powerCycle && warmStart && attempt == 0) {
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
     } else if (sdPwr >= 0 && powerCycle) {
-      if (warmStart && attempt == 1)
-        LOG_ERR("SD", "SDMMC warm mount failed (%s), power-cycling", esp_err_to_name(mountErr));
-      digitalWrite(sdPwr, HIGH);
-      delay(80);
+      if ((warmStart || offThroughSleep) && attempt == 1)
+        LOG_ERR("SD", "SDMMC %s mount failed (%s), power-cycling", warmStart ? "warm" : "wake",
+                esp_err_to_name(mountErr));
+      if (!offThroughSleep || attempt > 0) {
+        digitalWrite(sdPwr, HIGH);
+        delay(80);
+      }
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
       delay(120);
     } else if (sdPwr >= 0) {
