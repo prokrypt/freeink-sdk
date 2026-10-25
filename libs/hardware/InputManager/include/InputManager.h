@@ -154,6 +154,13 @@ class InputManager {
   // Home key is down. Returns true once the controller is in the requested
   // state; false on boards without a GT911 or when it did not respond.
   bool setTouchSleep(bool asleep);
+  // Non-blocking form: starts the transition and returns at once; update()
+  // steps it through the controller's ~60 ms of INT timing, so keys keep being
+  // sampled meanwhile and touch is not polled until it ends. True when the
+  // request was accepted (or already in that state); false as setTouchSleep().
+  // Whether it landed shows in isTouchAsleep() once touchSleepPending() clears.
+  bool requestTouchSleep(bool asleep);
+  bool touchSleepPending() const { return touchSleepStep != TouchSleepStep::None; }
   bool isTouchAsleep() const { return touchAsleep; }
   // True only while a GT911 controller is present. Other touch controllers
   // retain their existing single-contact contract.
@@ -478,6 +485,10 @@ class InputManager {
 
   bool touchDataEnabled = false;         // I2C up, controller present
   bool touchAsleep = false;              // GT911 sent to sleep by setTouchSleep()
+  enum class TouchSleepStep : uint8_t { None, SleepIntLow, SleepSettle, WakeIntHigh, WakeIntLow };
+  TouchSleepStep touchSleepStep = TouchSleepStep::None;  // requestTouchSleep() in flight
+  unsigned long touchSleepStepEndsAt = 0;
+  void advanceTouchSleep(unsigned long now);
   uint8_t gt911Addr = 0;                 // resolved GT911 address (0 until probed)
   unsigned long touchIrqPulseUntil = 0;  // synthesized-confirm window after a press
   unsigned long touchReadAt = 0;         // next scheduled I2C poll

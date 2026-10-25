@@ -620,6 +620,9 @@ void InputManager::update() {
 
   clearOneShotEvents();
   updateToggleSwitch(currentTime);
+#if FREEINK_CAP_TOUCH && FREEINK_TOUCH_GT911
+  advanceTouchSleep(currentTime);
+#endif
 
   if (BoardConfig::ACTIVE.inputStyle == BoardConfig::InputStyle::DigitalConfirmBackHold) {
     updateConfirmBackHold(currentTime);
@@ -1412,7 +1415,7 @@ void InputManager::beginTouch() {
 
 uint8_t InputManager::serviceTouch() {
 #if FREEINK_CAP_TOUCH
-  if (!touchDataEnabled || touchAsleep) {
+  if (!touchDataEnabled || touchAsleep || touchSleepPending()) {
     return 0;
   }
   const unsigned long now = millis();
@@ -2420,8 +2423,19 @@ void InputManager::beginGt911() {
 }
 
 bool InputManager::setTouchSleep(const bool asleep) {
+  if (!requestTouchSleep(asleep)) return false;
+  while (touchSleepPending()) {
+    delay(1);
+    advanceTouchSleep(millis());
+  }
+  return touchAsleep == asleep && (asleep || touchDataEnabled);
+}
+
+bool InputManager::requestTouchSleep(const bool asleep) {
   const auto& t = BoardConfig::ACTIVE.touch;
   if (t.controller != BoardConfig::TouchController::Gt911 || gt911Addr == 0 || t.irq < 0) return false;
+  // One transition at a time; a request against the one in flight waits for it.
+  if (touchSleepPending()) return false;
   if (asleep == touchAsleep) return true;
 
   if (asleep) {
@@ -2431,22 +2445,8 @@ bool InputManager::setTouchSleep(const bool asleep) {
     // settle. INT stays driven low while it sleeps.
     pinMode(t.irq, OUTPUT);
     digitalWrite(t.irq, LOW);
-    delay(5);
-    bool sent;
-    {
-      freeink::I2cBusLock bus;
-      Wire.beginTransmission(gt911Addr);
-      Wire.write(0x80);
-      Wire.write(0x40);
-      Wire.write(static_cast<uint8_t>(0x05));
-      sent = Wire.endTransmission() == 0;
-    }
-    if (!sent) {
-      pinMode(t.irq, INPUT);
-      return false;
-    }
-    delay(58);
-    touchAsleep = true;
+    touchSleepStep = TouchSleepStep::SleepIntLow;
+    touchSleepStepEndsAt = millis() + 5;
     return true;
   }
 
@@ -2454,21 +2454,61 @@ bool InputManager::setTouchSleep(const bool asleep) {
   // handing the line back (low for 50 ms, then input). The address strap is
   // only latched on reset, so this cannot move the controller's address.
   digitalWrite(t.irq, HIGH);
-  delay(5);
-  digitalWrite(t.irq, LOW);
-  delay(50);
-  pinMode(t.irq, INPUT);
-  touchAsleep = false;
-  uint8_t status = 0;
-  if (!gt911ReadReg(0x814E, &status, 1)) {
-    // No answer to the wake pulse: fall back to the full reset and probe.
-    beginGt911();
-    return touchDataEnabled;
-  }
-  // Drop any frame latched before or during sleep so it cannot surface as a
-  // stale touch.
-  gt911ClearStatus();
+  touchSleepStep = TouchSleepStep::WakeIntHigh;
+  touchSleepStepEndsAt = millis() + 5;
   return true;
+}
+
+void InputManager::advanceTouchSleep(const unsigned long now) {
+  if (!touchSleepPending() || static_cast<long>(now - touchSleepStepEndsAt) < 0) return;
+  const auto& t = BoardConfig::ACTIVE.touch;
+  switch (touchSleepStep) {
+    case TouchSleepStep::SleepIntLow: {
+      bool sent;
+      {
+        freeink::I2cBusLock bus;
+        Wire.beginTransmission(gt911Addr);
+        Wire.write(0x80);
+        Wire.write(0x40);
+        Wire.write(static_cast<uint8_t>(0x05));
+        sent = Wire.endTransmission() == 0;
+      }
+      if (!sent) {
+        pinMode(t.irq, INPUT);
+        touchSleepStep = TouchSleepStep::None;
+        return;
+      }
+      touchSleepStep = TouchSleepStep::SleepSettle;
+      touchSleepStepEndsAt = now + 58;
+      return;
+    }
+    case TouchSleepStep::SleepSettle:
+      touchAsleep = true;
+      touchSleepStep = TouchSleepStep::None;
+      return;
+    case TouchSleepStep::WakeIntHigh:
+      digitalWrite(t.irq, LOW);
+      touchSleepStep = TouchSleepStep::WakeIntLow;
+      touchSleepStepEndsAt = now + 50;
+      return;
+    case TouchSleepStep::WakeIntLow: {
+      pinMode(t.irq, INPUT);
+      touchAsleep = false;
+      touchSleepStep = TouchSleepStep::None;
+      uint8_t status = 0;
+      if (!gt911ReadReg(0x814E, &status, 1)) {
+        // No answer to the wake pulse: fall back to the full reset and probe.
+        beginGt911();
+        return;
+      }
+      // Drop any frame latched before or during sleep so it cannot surface as
+      // a stale touch.
+      gt911ClearStatus();
+      return;
+    }
+    case TouchSleepStep::None:
+      return;
+  }
 }
 
 bool InputManager::gt911ReadReg(const uint16_t reg, uint8_t* buf, const uint8_t len) {
@@ -2957,5 +2997,6 @@ void InputManager::pollGt911(const unsigned long now) {
 #else
 
 bool InputManager::setTouchSleep(bool) { return false; }
+bool InputManager::requestTouchSleep(bool) { return false; }
 
 #endif  // FREEINK_CAP_TOUCH
