@@ -156,7 +156,8 @@ class EpdBus {
   void begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_t spiMiso = -1, int8_t coCs = -1);
 
   // Hardware reset pulse; extraSettleMs adds a post-reset settle (X3 needs 50 ms).
-  void reset(uint16_t extraSettleMs = 0);
+  // untilIdle ends that settle as soon as BUSY reads idle (extraSettleMs caps it).
+  void reset(uint16_t extraSettleMs = 0, bool untilIdle = false);
 
   // Standalone command / data (each its own CS-framed transaction) — X4 style.
   void cmd(uint8_t c);

@@ -703,7 +703,9 @@ void Uc8179Driver::begin(EpdBus& bus) {
 #endif
   _panelGrayValid = false;
   _bwBaseShown = false;
-  bus.reset(50);
+  // Settle until BUSY_N reads idle instead of a fixed 50 ms (the vendor init
+  // sends its first command 10 ms after RST rises); 50 ms stays the cap.
+  bus.reset(50, /*untilIdle=*/true);
   initController(bus);
   if (_otpTrs == 0) readOtpVcom(bus);
 }
