@@ -1660,6 +1660,37 @@ void testListNavConvergesThroughRealList() {
 // pre-fix list() called that "no overflow" and pinned top at 0, so the clipped
 // tail was unreachable by swipe scrolling OR selection (the on-device File
 // Transfer menu at Large UI scale). Layout feedback must let the nav scroll.
+void testListScrollTrackEndsAtRows() {
+  FakeDrawTarget draw;
+  DeviceContext device = makeDevice();
+  InputSnapshot input;
+  ListItem items[10]{};
+  for (auto &item : items) item.label = "row";
+  // 3 rows of 30 fit the 100px band: the track stops at 90, not 100, and
+  // keeps that length on a short last page.
+  const Rect body{0, 0, 480, 100};
+  for (const uint16_t top : {0, 8}) {
+    draw.opCount = 0;
+    InteractionBuffer<32> interactions;
+    Frame<32> frame(draw, device, input, interactions);
+    ListProps props;
+    props.items = items;
+    props.count = 10;
+    props.topIndex = top;
+    props.rowHeight = 30;
+    list(frame, body, props);
+    bool track = false, overrun = false;
+    for (size_t k = 0; k < draw.opCount; ++k) {
+      const auto &op = draw.ops[k];
+      if (op.kind != FakeDrawTarget::Op::Fill || op.rect.x != 477) continue;
+      track = track || (op.rect.y == 0 && op.rect.height == 90);
+      overrun = overrun || op.rect.bottom() > 90;
+    }
+    CHECK(track);
+    CHECK(!overrun);
+  }
+}
+
 void testListNavScrollsClippedListWithinRowEstimate() {
   FakeDrawTarget draw;
   DeviceContext device = makeDevice();
@@ -6061,6 +6092,7 @@ int main() {
   testListPreviewPixels();
   testListNavLayoutFeedback();
   testListNavConvergesThroughRealList();
+  testListScrollTrackEndsAtRows();
   testListNavScrollsClippedListWithinRowEstimate();
   testListNavFittingListKeepsFullWidthTouchRects();
   testListCanUseFullTitleWidthWithShortValue();
