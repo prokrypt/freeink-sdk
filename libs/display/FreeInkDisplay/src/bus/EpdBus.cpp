@@ -201,7 +201,7 @@ void EpdBus::begin(const EpdPins& pins, uint32_t spiHz, BusyPolarity busy, int8_
   digitalWrite(pins.dc, HIGH);
 }
 
-void EpdBus::reset(uint16_t extraSettleMs) {
+void EpdBus::reset(uint16_t extraSettleMs, bool untilIdle) {
   NoLightSleepLockGuard noLightSleepLock(*this);
   if (BoardConfig::isOnePage()) {
     // OnePage shares GPIO27 between EPD reset and the SD/MIC power rail.
@@ -226,7 +226,11 @@ void EpdBus::reset(uint16_t extraSettleMs) {
   delay(10);
   setReset(true);
   delay(10);
-  if (extraSettleMs) {
+  if (untilIdle) {
+    const unsigned long start = millis();
+    while (isBusy() && millis() - start < extraSettleMs) delay(1);
+    LOG_DBG("EPD", "Reset settle: %lu ms", millis() - start);
+  } else if (extraSettleMs) {
     delay(extraSettleMs);
   }
 }
