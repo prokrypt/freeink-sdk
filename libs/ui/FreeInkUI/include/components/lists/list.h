@@ -1010,7 +1010,16 @@ void list(Frame<MaxInteractions> &frame, Rect rect, const ListProps &props) {
 
   if (props.scrollIndicator && consumedIndexes > 0 &&
       (top > 0 || consumedIndexes < props.count)) {
-    drawListScrollIndicator(frame.target(), rect, props.count, consumedIndexes, top,
+    // The track spans the rows, not the leftover band below the last one:
+    // whole fixed-height rows, or further down when taller rows reached it.
+    Rect track = rect;
+    const int16_t drawnBottom = static_cast<int16_t>(cursorY - rowGap);
+    const int16_t rowsBottom = static_cast<int16_t>(
+        rect.y + (visible > 0 ? visible * (rowH + rowGap) - rowGap : rect.height));
+    const int16_t trackBottom = drawnBottom > rowsBottom ? drawnBottom : rowsBottom;
+    if (trackBottom < rect.bottom())
+      track.height = static_cast<int16_t>(trackBottom - rect.y);
+    drawListScrollIndicator(frame.target(), track, props.count, consumedIndexes, top,
                             scrollW, scrollLeft ? 1 : 0, scrollInset);
   }
 
