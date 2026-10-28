@@ -263,6 +263,11 @@ non-obvious details, both reproduced in `SdmmcBlockDevice::begin`:
    `card_init` leaves SdFat's first (un-retried) block read to hit a still-marginal
    data path and fail with `sdmmc_read_sectors_dma … 0x107`. Validating a real read
    before publishing the card means the retry actually covers block I/O.
+   The first attempt shortens the cycle by reset reason: a software reset skips it
+   (the card stayed powered), and a deep-sleep wake or a power-on boot skips the 80 ms
+   off half (the card was already off: sleep holds GPIO5 HIGH; at power-on the card
+   lost power with the chip and GPIO5 floats as a plain input until the mount).
+   Attempts 2-4 run the full cycle.
 2. **Leave GPIO5 LOW.** Driving it HIGH after init (an earlier misreading of the
    OEM) breaks every subsequent read with `0x107`. It must stay in the LOW state the
    validated read succeeded under.
