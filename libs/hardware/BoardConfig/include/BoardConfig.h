@@ -1843,11 +1843,6 @@ static_assert(PICCO.displayWidth / 8 * PICCO.displayHeight == 48000,
 // Hardware-confirmed profile: display pins, GT911 pins/orientation, digital buttons,
 // GPIO8/GPIO9 frontlight channels, 1-bit SDMMC with GPIO5 enable, BM8563 RTC, and
 // CW2017 gauge. Panel mount orientation and USB/VBUS detection remain unconfirmed.
-// Display SPI defaults to the shared 10 MHz. A consumer that has validated a faster
-// clock on its hardware can override it, e.g. -DFREEINK_X4_PRO_DISPLAY_SPI_HZ=20000000u.
-#ifndef FREEINK_X4_PRO_DISPLAY_SPI_HZ
-#define FREEINK_X4_PRO_DISPLAY_SPI_HZ XTEINK_DISPLAY_SPI_HZ
-#endif
 constexpr BoardProfile XTEINK_X4_PRO = {
     Board::XteinkX4Pro,
     "xteink_x4_pro",
@@ -1863,7 +1858,7 @@ constexpr BoardProfile XTEINK_X4_PRO = {
     // needed. GPIO1 also triggers a refresh when toggled (likely a panel power
     // enable), but the panel works without driving it, so powerEnable stays unset.
     {12, 11, 13, 18, 14, 6, PIN_UNASSIGNED},
-    FREEINK_X4_PRO_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz across SSD1677/UC8179/UC8279 batches unless overridden above
+    XTEINK_DISPLAY_SPI_HZ,  // displaySpiHz: 10 MHz across SSD1677/UC8179/UC8279 batches
     // SD is native SDMMC (see the sdmmc field below) — the card is silent to SPI-mode CMD0 on
     // hardware. This SPI SdPins entry is retained only for its powerEnable=GPIO5, the SD enable
     // used by the SDMMC mount path. GPIO5 is ACTIVE-LOW: SdmmcBlockDevice pulses it HIGH→LOW
