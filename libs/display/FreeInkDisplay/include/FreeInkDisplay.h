@@ -320,6 +320,12 @@ class FreeInkDisplay {
   // skips its power-on wait. Skipped while a refresh or grayscale pass is
   // pending; true when the panel switched on.
   bool powerOnIdle();
+  // Start the panel-temperature read (UC8179 TSC, ~106 ms BUSY) now so it
+  // converts while the host boots; the next panel command collects it. Call
+  // after begin() when the first refresh is a Full: that refresh then gets a
+  // measured temperature and skips its own post-refresh read. Skipped while a
+  // refresh or grayscale pass is pending.
+  void startTemperatureRead();
 
   // Optional hooks fired around long BUSY waits (~0.3-2 s per refresh), so host
   // firmware can apply its own power policy (e.g. reduce the CPU clock) for the

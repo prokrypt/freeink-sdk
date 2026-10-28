@@ -1206,6 +1206,11 @@ bool FreeInkDisplay::powerOnIdle() {
   return _driver->powerOnIdle(_bus);
 }
 
+void FreeInkDisplay::startTemperatureRead() {
+  if (!_driver || _refreshPending || _grayscaleMode != GrayscaleMode::Overlay) return;
+  _driver->startTemperatureRead(_bus);
+}
+
 void FreeInkDisplay::deepSleep() {
   cancelGrayscalePass();
   DisplayPmLock pmLock;

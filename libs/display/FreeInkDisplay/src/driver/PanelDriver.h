@@ -61,6 +61,9 @@ class PanelDriver {
     (void)bus;
     return false;
   }
+  // Start a panel-temperature read that converts while the host does other
+  // work; the driver collects it before its next command. No-op by default.
+  virtual void startTemperatureRead(EpdBus& bus) { (void)bus; }
 
   // --- core paint path (load RAM + refresh) ---
   virtual void display(EpdBus& bus, const uint8_t* fb, const uint8_t* prev, RefreshMode mode, bool turnOff) = 0;
