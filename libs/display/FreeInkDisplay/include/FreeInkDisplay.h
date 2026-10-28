@@ -310,7 +310,8 @@ class FreeInkDisplay {
   void deepSleep();
   // Booster off between refreshes (panel keeps its image). Skipped while a
   // refresh or grayscale pass is pending; true when the panel switched off.
-  bool powerOffIdle();
+  // sampleTemp=false skips the idle panel-temperature read (UC8179 TSC, ~106 ms).
+  bool powerOffIdle(bool sampleTemp = true);
   // Booster on ahead of a refresh (e.g. on touch-down) so the next refresh
   // skips its power-on wait. Skipped while a refresh or grayscale pass is
   // pending; true when the panel switched on.
