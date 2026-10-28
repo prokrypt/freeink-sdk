@@ -1189,10 +1189,12 @@ bool Uc8179Driver::seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
   return true;
 }
 
-bool Uc8179Driver::powerOffIdle(EpdBus& bus) {
+bool Uc8179Driver::powerOffIdle(EpdBus& bus, const bool sampleTemp) {
   if (!_isScreenOn) return false;
 #if FREEINK_UC8179_PANEL_TEMP
-  samplePanelTemperature(bus, PANEL_TEMP_PERIOD_MS);  // idle: nobody waits on its BUSY
+  if (sampleTemp) samplePanelTemperature(bus, PANEL_TEMP_PERIOD_MS);  // idle: nobody waits on its BUSY
+#else
+  (void)sampleTemp;
 #endif
   bus.cmd(CMD_POWER_OFF);  // POF; startBwRefresh() and the gray paths re-send PON
   bus.waitBusy(" 8179_IDLE_POF");

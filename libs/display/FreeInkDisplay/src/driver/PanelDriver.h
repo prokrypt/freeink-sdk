@@ -50,8 +50,10 @@ class PanelDriver {
   virtual void deepSleep(EpdBus& bus) = 0;
   // Turn the charge pump/booster off between refreshes while the panel keeps
   // its image; the next refresh powers it back on. True when it switched off.
-  virtual bool powerOffIdle(EpdBus& bus) {
+  // sampleTemp=false skips any idle panel-temperature read ahead of the POF.
+  virtual bool powerOffIdle(EpdBus& bus, bool sampleTemp = true) {
     (void)bus;
+    (void)sampleTemp;
     return false;
   }
   // Booster back on ahead of the next refresh. True when it switched on.
