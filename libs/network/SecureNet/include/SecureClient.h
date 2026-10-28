@@ -27,6 +27,11 @@
 
 namespace freeink {
 
+// True when `host` (a name or an IP literal) resolves; logs a failure.
+// Arduino-ESP32 3.3.x NetworkClient::connect(host) treats a failed lookup as
+// success and waits out the connect timeout on 0.0.0.0, so check this first.
+bool hostResolves(const char* host);
+
 class SecureClient : public Client {
  public:
   SecureClient() = default;
@@ -93,6 +98,7 @@ class SecureClient : public Client {
   void* _ctx = nullptr;  // WOLFSSL_CTX*
   bool _connected = false;
   bool _readFailed = false;
+  bool _tcpConnected = false;  // the last connectWithMethod() reached the handshake
   bool _handshakeOk = false;  // this connection may hand its session on
   uint16_t _port = 0;
   char _host[64] = {};  // resumption key; longer hosts never resume
