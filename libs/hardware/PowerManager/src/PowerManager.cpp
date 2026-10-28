@@ -94,7 +94,7 @@ void PowerManager::waitForPowerButtonRelease() {
   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   const int pressedLevel = activeHigh ? HIGH : LOW;
   while (digitalRead(pin) == pressedLevel) {
-    delay(50);
+    delay(10);
   }
 }
 
