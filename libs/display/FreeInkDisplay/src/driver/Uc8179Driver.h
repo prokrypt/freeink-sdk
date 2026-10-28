@@ -110,10 +110,14 @@ class Uc8179Driver : public PanelDriver {
   void copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) override;
   void copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) override;
   void displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut, bool factoryMode) override;
+  bool displayGrayStart(EpdBus& bus, const uint8_t* fb) override;
   void cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) override;
 
  private:
   void initController(EpdBus& bus);
+  static void waitDrfStarted(EpdBus& bus);
+  bool startGray(EpdBus& bus);
+  void finishGray(EpdBus& bus, bool turnOff);
   void startBwRefresh(EpdBus& bus, bool fast);
   // Frame a B/W refresh's full-screen swing starts at (< 0: none). displayStart
   // plans the flash with it before any panel work; startBwRefresh times DRF.
@@ -207,6 +211,10 @@ class Uc8179Driver : public PanelDriver {
   // normally follows overwrites it immediately. DTM1 still holds the previous
   // page until syncStaleOldPlane() or that upload runs.
   bool _oldPlaneStale = false;
+  // A gray DRF from displayGrayStart() runs; displayFinish() completes it.
+  bool _pendingGray = false;
+  bool _grayOverlayPlanes = false;
+  unsigned long _grayDrfMs = 0;
 };
 
 PanelDriver& uc8179Driver();

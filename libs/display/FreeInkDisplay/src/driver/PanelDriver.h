@@ -196,6 +196,13 @@ class PanelDriver {
     (void)factoryMode;
     display(bus, fb, nullptr, RefreshMode::Fast, turnOff);
   }
+  // Deferred Direct/Absolute gray pass: fire the gray waveform and return while
+  // it runs, panel left on. True leaves it pending for displayFinish(). The
+  // default runs the blocking displayGray() and returns false.
+  virtual bool displayGrayStart(EpdBus& bus, const uint8_t* fb) {
+    displayGray(bus, fb, false, nullptr, true);
+    return false;
+  }
   // Diagnostic four-gray comparison. The full frame is first rendered with
   // the controller's flashing OTP waveform; `custom*` is then rebuilt with the
   // driver's non-flashing grayscale path. Default drivers keep the OTP frame.

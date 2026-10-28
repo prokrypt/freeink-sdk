@@ -1077,13 +1077,15 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   gDrfStartMs = millis();
   gKbdTiming.uploadMs = static_cast<uint32_t>(gDrfStartMs - gUploadStartMs);
   bus.cmd(CMD_DISPLAY_REFRESH);
-  // Confirm the waveform started (BUSY dropped) before returning, so
-  // displayFinish() only rides out the completion edge.
-  {
-    const int8_t busyPin = bus.pins().busy;
-    const unsigned long t0 = millis();
-    while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
-  }
+  waitDrfStarted(bus);
+}
+
+// Confirm the waveform started (BUSY dropped) before returning, so
+// displayFinish() only rides out the completion edge.
+void Uc8179Driver::waitDrfStarted(EpdBus& bus) {
+  const int8_t busyPin = bus.pins().busy;
+  const unsigned long t0 = millis();
+  while (digitalRead(busyPin) == HIGH && millis() - t0 < 50) delay(1);
 }
 
 #if FREEINK_UC8179_PANEL_TEMP
@@ -1117,6 +1119,11 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus, const unsigned long perio
 #endif
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
+  if (_pendingGray) {
+    _pendingGray = false;
+    finishGray(bus, false);  // deepSleep() powers the panel off
+    return;
+  }
   if (!_pendingRefresh) return;
   _pendingRefresh = false;
   bus.waitRefreshComplete(" 8179_DRF");
@@ -1366,10 +1373,21 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
 
 void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, const unsigned char* lut,
                                bool factoryMode) {
-  syncStaleOldPlane(bus);
   (void)fb;
   (void)lut;  // waveform comes from kDirectGraySet
   (void)factoryMode;
+  if (startGray(bus)) finishGray(bus, turnOff);
+}
+
+bool Uc8179Driver::displayGrayStart(EpdBus& bus, const uint8_t* fb) {
+  (void)fb;
+  _pendingGray = startGray(bus);
+  return _pendingGray;
+}
+
+// Loads the gray waveform and fires its DRF; false when no DRF was fired.
+bool Uc8179Driver::startGray(EpdBus& bus) {
+  syncStaleOldPlane(bus);
 
   // Every gray page runs the balanced direct-gray waveform (every row nets
   // zero) instead of the stock AA set, whose rows push one way. The overlay
@@ -1381,6 +1399,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // its result kept the old page as ghosts in the image's white/black areas
   // and left first-page text gray (log 20260930T082014Z-2557c0fd L4067-4077).
   const bool overlayPlanes = !_directGrayPass && _absoluteGrayPlanes;
+  _grayOverlayPlanes = overlayPlanes;
   if (!_directGrayPass) {
     bus.waitBusy(" 8179_gray_ready");
     if (!_absoluteGrayPlanes && !_absoluteInput) {
@@ -1392,7 +1411,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
       _needFullClear = true;
       _oldPlaneValid = false;
       _bwPlanesSynced = false;
-      return;
+      return false;
     }
     // Power on first so the setup keeps power and never resets the controller,
     // which would lose the planes already in DTM1/DTM2.
@@ -1416,7 +1435,7 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
     _directGrayPass = true;
     _directGrayPlanes = 3;
   }
-  if (_directGrayPlanes != 3) return;
+  if (_directGrayPlanes != 3) return false;
   bus.waitBusy(" 8179_direct_ready");
   if (!_isScreenOn) {
     bus.cmd(CMD_POWER_ON);
@@ -1428,14 +1447,20 @@ void Uc8179Driver::displayGray(EpdBus& bus, const uint8_t* fb, bool turnOff, con
   // backgrounds run the stock black row, which drives from frame 0.
   swingStart(_holdBwPass ? -1 : _darkBackground ? 0 : directGrayFrames(true), &gGrayFrameUs, directGrayFrames(false), true,
              _darkBackground ? Uc8179FlashKind::GrayDark : Uc8179FlashKind::Gray);
-  const unsigned long grayDrfMs = millis();
+  _grayDrfMs = millis();
   bus.cmd(CMD_DISPLAY_REFRESH);
+  waitDrfStarted(bus);
+  return true;
+}
+
+// Waits out the gray DRF fired by startGray() and records what the panel shows.
+void Uc8179Driver::finishGray(EpdBus& bus, const bool turnOff) {
   bus.waitBusy(" 8179_DIRECT_GRAY_DRF");
-  swingEnd(grayDrfMs);
+  swingEnd(_grayDrfMs);
   _holdBwPass = false;
   _directGrayOnPanel = true;
   // _grayBase (B/W base) + _grayMask (gray pixels) now describe the panel.
-  _panelGrayValid = overlayPlanes && _grayBase != nullptr && _grayMask != nullptr;
+  _panelGrayValid = _grayOverlayPlanes && _grayBase != nullptr && _grayMask != nullptr;
   _bwBaseShown = false;
   _directGrayPass = false;
   _directGrayPlanes = 0;

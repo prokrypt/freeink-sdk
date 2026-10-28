@@ -276,6 +276,10 @@ class FreeInkDisplay {
   // EXPERIMENTAL: Windowed update - display only a rectangular region
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lut = nullptr, bool factoryMode = false);
+  // displayGrayBuffer() without the wait, for Direct/Absolute passes: true while
+  // the gray waveform runs, panel left on; waitRefreshComplete(), deepSleep()
+  // or any later display call finishes it. Overlay passes stay blocking.
+  bool displayGrayBufferAsync();
   void displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
@@ -451,6 +455,7 @@ class FreeInkDisplay {
   uint16_t _grayRows[2] = {0, 0};
   bool _grayPassFailed = false;
   void cancelGrayscalePass();
+  bool displayGrayImpl(bool turnOffScreen, const unsigned char* lut, bool factoryMode, bool async);
   bool acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows);
   bool _refreshPending = false;
   uint8_t* _asyncShadow = nullptr;

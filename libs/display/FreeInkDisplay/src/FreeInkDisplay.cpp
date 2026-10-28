@@ -884,29 +884,40 @@ void FreeInkDisplay::displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t 
 }
 
 void FreeInkDisplay::displayGrayBuffer(bool turnOffScreen, const unsigned char* lut, bool factoryMode) {
+  displayGrayImpl(turnOffScreen, lut, factoryMode, false);
+}
+
+bool FreeInkDisplay::displayGrayBufferAsync() { return displayGrayImpl(false, nullptr, false, true); }
+
+bool FreeInkDisplay::displayGrayImpl(bool turnOffScreen, const unsigned char* lut, bool factoryMode, bool async) {
 #if defined(SSD1677_PROBE_DEBUG) && SSD1677_PROBE_DEBUG
   Serial.printf("[EPD] displayGrayBuffer\n");
 #endif
   // Inverted mode renders a crisp BW page unless the driver folds overlay gray
   // in panel polarity (setInvertedTextGray); normal planes would partially undo
   // the output inversion.
-  if (invertedGrayBlocked()) return;
+  if (invertedGrayBlocked()) return false;
   DisplayPmLock pmLock;
   syncPendingAsync();
   _shadowValid = false;
   _redRamSynced = false;  // grayscale leaves RED holding a gray plane, not the BW baseline
-  if (_grayPassFailed) return;
+  if (_grayPassFailed) return false;
   if (_grayscaleMode != GrayscaleMode::Overlay) {
     if (_grayRows[0] != getDisplayHeight() || _grayRows[1] != getDisplayHeight() || lut != nullptr) {
       cancelGrayscalePass();
-      return;
+      return false;
     }
-    _driver->displayGray(_bus, frameBuffer, turnOffScreen, nullptr, true);
+    if (async) {
+      _refreshPending = _driver->displayGrayStart(_bus, frameBuffer);
+    } else {
+      _driver->displayGray(_bus, frameBuffer, turnOffScreen, nullptr, true);
+    }
     _inversionDirty = false;
     cancelGrayscalePass();
-    return;
+    return _refreshPending;
   }
   _driver->displayGray(_bus, frameBuffer, turnOffScreen, lut, factoryMode);
+  return false;
 }
 
 void FreeInkDisplay::displayGrayCalibration(uint16_t customX, uint16_t customY, uint16_t customW, uint16_t customH) {
