@@ -1450,6 +1450,9 @@ bool Uc8179Driver::startGray(EpdBus& bus) {
   _grayDrfMs = millis();
   bus.cmd(CMD_DISPLAY_REFRESH);
   waitDrfStarted(bus);
+  // The panel is being driven to gray from here: a frame retained for a restart
+  // during a deferred pass must not be the B/W framebuffer.
+  _directGrayOnPanel = true;
   return true;
 }
 
