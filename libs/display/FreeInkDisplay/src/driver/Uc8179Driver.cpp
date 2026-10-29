@@ -703,6 +703,7 @@ void Uc8179Driver::begin(EpdBus& bus) {
 #endif
   _panelGrayValid = false;
   _bwBaseShown = false;
+  _tempPending = false;  // the reset below drops a TSC in flight
   // Settle until BUSY_N reads idle instead of a fixed 50 ms (the vendor init
   // sends its first command 10 ms after RST rises); 50 ms stays the cap.
   bus.reset(50, /*untilIdle=*/true);
@@ -1089,19 +1090,28 @@ void Uc8179Driver::waitDrfStarted(EpdBus& bus) {
 }
 
 #if FREEINK_UC8179_PANEL_TEMP
-void Uc8179Driver::samplePanelTemperature(EpdBus& bus, const unsigned long periodMs) {
+bool Uc8179Driver::startPanelTemperature(EpdBus& bus, const unsigned long periodMs) {
   const unsigned long now = millis();
-  if (gPanelTempTried && now - gPanelTempTryMs < periodMs) return;
+  if (_tempPending || (gPanelTempTried && now - gPanelTempTryMs < periodMs)) return false;
   gPanelTempTried = true;
   gPanelTempTryMs = now;
   // TSE (R41h) stays at its power-on default (internal sensor, no offset), so
   // the first data byte is TS[7:0]: signed whole degrees C (datasheet R40h).
   // CCSET TSFIX=1 makes the chip report the forced TSSET value instead of the
   // sensor (RE0h), so clear it for the read only. Gray refreshes do not rewrite
-  // CCSET, so it is restored before returning.
+  // CCSET, so collectPanelTemperature() restores it.
   bus.cmd(CMD_CCSET);
   bus.data(static_cast<uint8_t>(_cfg.ccset & ~0x02));
   bus.cmd(CMD_TSC);
+  _tempPending = true;
+  return true;
+}
+#endif
+
+void Uc8179Driver::collectPanelTemperature(EpdBus& bus) {
+#if FREEINK_UC8179_PANEL_TEMP
+  if (!_tempPending) return;
+  _tempPending = false;
   bus.waitBusy(" 8179_TSC");
   uint8_t raw = 0;
   const bool read = bus.readData(&raw, 1);
@@ -1112,11 +1122,27 @@ void Uc8179Driver::samplePanelTemperature(EpdBus& bus, const unsigned long perio
     return;
   }
   gPanelTempC = static_cast<int8_t>(raw);
-  gPanelTempMs = now;
+  gPanelTempMs = gPanelTempTryMs;
   gPanelTempValid = true;
   LOG_DBG("EPD", "8179 TSC raw 0x%02X = %d C", raw, static_cast<int>(gPanelTempC));
+#else
+  (void)bus;
+#endif
+}
+
+#if FREEINK_UC8179_PANEL_TEMP
+void Uc8179Driver::samplePanelTemperature(EpdBus& bus, const unsigned long periodMs) {
+  if (startPanelTemperature(bus, periodMs)) collectPanelTemperature(bus);
 }
 #endif
+
+void Uc8179Driver::startTemperatureRead(EpdBus& bus) {
+#if FREEINK_UC8179_PANEL_TEMP
+  startPanelTemperature(bus, PANEL_TEMP_PERIOD_MS);
+#else
+  (void)bus;
+#endif
+}
 
 void Uc8179Driver::displayFinish(EpdBus& bus, const uint8_t* fb) {
   if (_pendingGray) {
@@ -1190,6 +1216,7 @@ void Uc8179Driver::skipInitialResync() { _needFullClear = false; }
 // refresh run the fast differential waveform instead of a full GC flash.
 bool Uc8179Driver::seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
   if (_directGrayConfigured) return false;
+  collectPanelTemperature(bus);
   bus.waitBusy(" 8179_seed");
   streamPlane(bus, CMD_DTM1, frame);
   _oldPlaneValid = true;
@@ -1199,6 +1226,7 @@ bool Uc8179Driver::seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) {
 }
 
 bool Uc8179Driver::powerOffIdle(EpdBus& bus, const bool sampleTemp) {
+  collectPanelTemperature(bus);
   if (!_isScreenOn) return false;
 #if FREEINK_UC8179_PANEL_TEMP
   if (sampleTemp) samplePanelTemperature(bus, PANEL_TEMP_PERIOD_MS);  // idle: nobody waits on its BUSY
@@ -1215,6 +1243,7 @@ bool Uc8179Driver::powerOnIdle(EpdBus& bus) {
   // The direct-gray register set resets the controller (and powers off) on the
   // next B/W refresh, so an early PON there would be wasted.
   if (_isScreenOn || _directGrayConfigured) return false;
+  collectPanelTemperature(bus);
   bus.cmd(CMD_POWER_ON);
   bus.waitBusy(" 8179_EARLY_PON");
   _isScreenOn = true;
@@ -1246,6 +1275,7 @@ void Uc8179Driver::deepSleep(EpdBus& bus) {
 // masks are converted below to Factory.bin's absolute plane0/plane1 encoding;
 // the resulting (DTM1,DTM2) pair selects the WW/BW/WB/BB LUT per pixel.
 void Uc8179Driver::syncStaleOldPlane(EpdBus& bus) {
+  collectPanelTemperature(bus);
   if (!_oldPlaneStale) return;
   _oldPlaneStale = false;
   bus.waitBusy(" 8179_old_sync");
@@ -1295,6 +1325,7 @@ void Uc8179Driver::beginGrayscale(EpdBus& bus, const uint8_t* fb, GrayscaleMode 
 
 void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
   if (!lsb) return;
+  collectPanelTemperature(bus);
   {
     // Flash duck: plan the gray pass's swing as displayGray will decide it
     // (overlay planes come out absolute iff the B/W base is valid).

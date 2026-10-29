@@ -80,6 +80,7 @@ class Uc8179Driver : public PanelDriver {
   void requestResync(uint8_t settlePasses) override;
   void skipInitialResync() override;
   bool seedDisplayedFrame(EpdBus& bus, const uint8_t* frame) override;
+  void startTemperatureRead(EpdBus& bus) override;
   bool grayOnPanel() const override { return _directGrayOnPanel; }
   void setSmoothGray(bool smooth) override { _smoothGray = smooth; }
   // Dark mode: overlay gray folds its planes in panel polarity and runs the
@@ -139,9 +140,16 @@ class Uc8179Driver : public PanelDriver {
 #if FREEINK_UC8179_PANEL_TEMP
   // periodMs: minimum age of the last sample before another is taken.
   void samplePanelTemperature(EpdBus& bus, unsigned long periodMs);
+  // Sends TSC and returns while it converts (~106 ms BUSY); false when no
+  // sample is due. collectPanelTemperature() reads the result.
+  bool startPanelTemperature(EpdBus& bus, unsigned long periodMs);
 #endif
+  // Reads a TSC that startPanelTemperature() left converting. Every entry point
+  // that sends a command calls this first (syncStaleOldPlane() does).
+  void collectPanelTemperature(EpdBus& bus);
   // Streams the displayed base (_grayBase) into DTM1 when a deferred base left
-  // it stale. Every entry point that relies on DTM1 calls this first.
+  // it stale. Every entry point that relies on DTM1 calls this first. It
+  // collects a pending temperature read before any other command.
   void syncStaleOldPlane(EpdBus& bus);
   void readOtpVcom(EpdBus& bus);
   bool loadOtpVcomCache(const uint8_t* tb);
@@ -213,6 +221,7 @@ class Uc8179Driver : public PanelDriver {
   bool _oldPlaneStale = false;
   // A gray DRF from displayGrayStart() runs; displayFinish() completes it.
   bool _pendingGray = false;
+  bool _tempPending = false;  // TSC sent, result not read yet
   bool _grayOverlayPlanes = false;
   unsigned long _grayDrfMs = 0;
 };
