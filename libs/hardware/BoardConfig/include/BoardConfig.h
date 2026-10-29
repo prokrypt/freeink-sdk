@@ -550,8 +550,8 @@ struct SdPins {
   // HIGH to power the card down. Defaulted so existing initializers stay valid.
   bool powerActiveHigh = true;
   // SDMMC mount power-cycles powerEnable (off 80 ms, on 120 ms) before each
-  // attempt, as the X4 Pro's stock mountSD does (a deep-sleep wake's first
-  // attempt skips the off half: sleep held it off). false just holds it on — for
+  // attempt, as the X4 Pro's stock mountSD does (a deep-sleep wake's or power-on
+  // boot's first attempt skips the off half: the card was already off). false just holds it on — for
   // boards whose enable also feeds other already-running peripherals (Picco).
   bool powerCycleOnMount = true;
 };

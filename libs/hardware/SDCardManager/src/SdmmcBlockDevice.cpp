@@ -116,21 +116,26 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
   // first attempt skips the 200 ms power cycle; CMD0 in sdmmc_card_init resets
   // it. After a deep sleep the enable was held off all through the sleep
   // (PowerManager::powerDownRailsForSleep), far longer than the cycle's 80 ms
-  // off half, so the first attempt skips that half. A failure falls through to
-  // the full power-cycled attempts below.
+  // off half, so the first attempt skips that half. A power-on reset follows a
+  // power loss that took the card down with the chip, and the enable then sits
+  // floating from reset until here (GPIO reset state: input, no pull), so the
+  // first attempt skips that half too. A failure falls through to the full
+  // power-cycled attempts below.
   const esp_reset_reason_t resetReason = esp_reset_reason();
   const bool warmStart = resetReason == ESP_RST_SW;
-  const bool offThroughSleep = resetReason == ESP_RST_DEEPSLEEP;
+  const bool coldStart = resetReason == ESP_RST_POWERON;
+  const bool offBeforeMount = resetReason == ESP_RST_DEEPSLEEP || coldStart;
   esp_err_t mountErr = ESP_FAIL;
-  for (int attempt = 0; attempt < 4; attempt++) {
+  int attempt = 0;
+  for (; attempt < 4; attempt++) {
     const bool powerCycle = BoardConfig::ACTIVE.sd.powerCycleOnMount;
     if (sdPwr >= 0 && powerCycle && warmStart && attempt == 0) {
       digitalWrite(sdPwr, LOW);  // run with the enable held LOW
     } else if (sdPwr >= 0 && powerCycle) {
-      if ((warmStart || offThroughSleep) && attempt == 1)
-        LOG_ERR("SD", "SDMMC %s mount failed (%s), power-cycling", warmStart ? "warm" : "wake",
+      if ((warmStart || offBeforeMount) && attempt == 1)
+        LOG_ERR("SD", "SDMMC %s mount failed (%s), power-cycling", warmStart ? "warm" : (coldStart ? "cold" : "wake"),
                 esp_err_to_name(mountErr));
-      if (!offThroughSleep || attempt > 0) {
+      if (!offBeforeMount || attempt > 0) {
         digitalWrite(sdPwr, HIGH);
         delay(80);
       }
@@ -157,6 +162,7 @@ bool SdmmcBlockDevice::begin(const BoardConfig::SdmmcPins& pins) {
     sdmmc_host_deinit();
     return false;
   }
+  LOG_INF("SD", "SDMMC mount ok on attempt %d (reset reason %d)", attempt + 1, static_cast<int>(resetReason));
   _card = card;
   return true;
 }
