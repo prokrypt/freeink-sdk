@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <initializer_list>  // BoardConfig.h range-for over the latch pins
 #include <BoardConfig.h>
+#include <I2cBusLock.h>
 #include <M5Pm1.h>
 #include <esp_idf_version.h>
 #if ESP_IDF_VERSION_MAJOR < 5
@@ -79,6 +80,7 @@ bool readReg8(uint8_t addr, uint8_t reg, uint8_t& out) {
 }
 
 bool readRegs(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t length) {
+  freeink::I2cBusLock bus(gaugeWire());
   if (addr == 0) return false;
   ensureWire();
   TwoWire& w = gaugeWire();
@@ -92,6 +94,7 @@ bool readRegs(uint8_t addr, uint8_t reg, uint8_t* out, uint8_t length) {
 
 // True when a device acknowledges its address (an empty write).
 bool i2cAcks(uint8_t addr) {
+  freeink::I2cBusLock bus(gaugeWire());
   ensureWire();
   TwoWire& w = gaugeWire();
   w.beginTransmission(addr);
@@ -111,6 +114,7 @@ bool writeReg8(uint8_t addr, uint8_t reg, uint8_t val) {
 
 // One I2C write per word: the X3's BQ27220 ignores a Control() subcommand split in two.
 bool writeReg16(uint8_t addr, uint8_t reg, uint16_t val) {
+  freeink::I2cBusLock bus(gaugeWire());
   ensureWire();
   TwoWire& w = gaugeWire();
   delayMicroseconds(66);  // BQ27220 bus-free time between transactions
