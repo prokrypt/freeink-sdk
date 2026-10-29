@@ -8,6 +8,10 @@
 // integration point for the TLS 1.3 transport.
 #if defined(FREEINK_NET_WOLFSSL)
 #include <wolfssl/ssl.h>
+#if defined(FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER)
+#include <wolfssl/internal.h>
+#include <atomic>
+#endif
 #endif
 
 namespace freeink {
@@ -28,6 +32,13 @@ void SecureClient::setInsecure() { _insecure = true; }
 #if defined(FREEINK_NET_WOLFSSL)
 
 namespace {
+#if defined(FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER)
+// Admission only, never an allocator hook or a buffer loan. One connection
+// reserves proactively; others retain their existing on-demand allocation path.
+std::atomic<SecureClient*> recordReservationOwner{nullptr};
+constexpr int kFullRecordCapacity = (1 << 14) + 256 + 64;
+#endif
+
 // Bridge wolfSSL's I/O to the underlying WiFiClient transport.
 int wcSend(WOLFSSL* /*ssl*/, char* buf, int sz, void* ctx) {
   auto* t = static_cast<WiFiClient*>(ctx);
@@ -210,6 +221,31 @@ int SecureClient::connectWithMethod(const char* host, uint16_t port, void* metho
   return 1;
 }
 
+void SecureClient::reserveFullRecord() {
+#if defined(FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER)
+  auto* ssl = static_cast<WOLFSSL*>(_ssl);
+  if (!_connected || !ssl) return;
+#ifdef HAVE_MAX_FRAGMENT
+  if (ssl->max_fragment < MAX_RECORD_SIZE) return;
+#endif
+  const auto& input = ssl->buffers.inputBuffer;
+  // Do not relocate unread ciphertext or a buffer still referenced by plaintext.
+  // Normal wolfSSL reads will consume it and grow on demand if necessary.
+  if (input.bufferSize >= kFullRecordCapacity || input.length != input.idx ||
+      ssl->buffers.clearOutputBuffer.length != 0) return;
+  SecureClient* expected = nullptr;
+  if (!recordReservationOwner.compare_exchange_strong(expected, this)) return;
+  // ~16.7 KB is too large for a task stack or permanent DRAM. GrowInputBuffer
+  // allocates through wolfSSL's own allocator and transfers ownership to ssl;
+  // the consumer's retention patch reuses it until wolfSSL_free().
+  if (GrowInputBuffer(ssl, kFullRecordCapacity, 0) != 0) {
+    recordReservationOwner.store(nullptr);
+    if (Serial) Serial.printf("[SecureClient] no full-record buffer, max block %u\n",
+                              (unsigned)ESP.getMaxAllocHeap());
+  }
+#endif
+}
+
 bool SecureClient::abortRequested() {
   if (!_shouldAbort || !_shouldAbort()) return false;
   _aborted = true;
@@ -291,6 +327,11 @@ void SecureClient::stop() {
   }
   _handshakeOk = false;
   if (_ssl) { wolfSSL_free(static_cast<WOLFSSL*>(_ssl)); _ssl = nullptr; }
+#if defined(FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER)
+  // Release admission only after wolfSSL has freed its connection-owned memory.
+  SecureClient* expected = this;
+  recordReservationOwner.compare_exchange_strong(expected, nullptr);
+#endif
   if (_ctx) { wolfSSL_CTX_free(static_cast<WOLFSSL_CTX*>(_ctx)); _ctx = nullptr; }
   _transport.stop();
   _connected = false;

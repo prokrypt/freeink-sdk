@@ -48,6 +48,20 @@ profile against a model CW2015: the battery-profile check and upload sequence,
 the voltage and percentage conversion, and the ADC fallback when no gauge
 answers.
 
+## Motion sensors
+
+```sh
+sh libs/hardware/Imu/test/host/run.sh
+```
+
+Compiles `Imu` with the Metalio EInk4 profile against a model SC7A20H (and
+the QMI8658 and LSM6DS3 scaling), once more with `FREEINK_CAP_IMU=0`, and with
+the Paper Mono profile against a model BMI270: `begin()` must only identify
+the part, the first `wake()` or `read()` must stream the whole configuration
+file through the INIT window in order with a longer bus timeout, a warm part
+must skip the upload, and the board's axis flips apply. The model does not run
+the configuration file, so the sensor's data path still needs a device.
+
 ## Fonts
 
 ```sh
@@ -77,9 +91,22 @@ report decode into key events, auto-reconnect, scanning and teardown order.
 The fake has no radio, so pairing, link timing and memory use still need a
 device.
 
+## Frontlight driver
+
+```sh
+sh libs/hardware/FrontlightManager/test/host/run.sh
+```
+
+Compiles the Picco frontlight backend and real board profile against a register
+model with a wake-settling interval. Covers the first nonzero brightness write,
+off/on level restoration, warm/cool channels, slider updates without repeated
+wake delays, and retry after a failed wake transaction. Physical light output
+and the actual controller settling time still require a device check.
+
 ## Display drivers
 
 ```sh
+python3 libs/display/FreeInkDisplay/test/host/run_bus.py
 python3 libs/display/FreeInkDisplay/test/host/run_pro.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279.py
 python3 libs/display/FreeInkDisplay/test/host/run_uc8279c_a4.py
@@ -88,7 +115,9 @@ python3 libs/display/FreeInkDisplay/test/host/run_picco.py
 ```
 
 These compile production drivers against recording buses. The Pro suite also
-compiles the facade in single- and dual-buffer modes. The Picco suite builds the
+compiles the facade in single- and dual-buffer modes, checks every concrete driver
+header against the shared interface, and verifies selected controller identity
+independently of board metadata. The Picco suite builds the
 SSD1677/SSD2677 drivers as a Picco and as a Sticky, including each board's
 bit-banged panel probe. The checks cover transfer
 sequences, grayscale uploads, refresh lifecycle, and power-state behavior for
@@ -110,3 +139,23 @@ SDK APIs. A public method, board profile, compatibility wrapper, or capability-g
 driver can have no in-repository callers and still be used by downstream firmware.
 Check references across all configurations before removing internal symbols, and
 exclude vendored dependencies and generated assets from routine source cleanup.
+
+## SecureNet bulk transfers
+
+```sh
+sh libs/network/SecureNet/test/host/run.sh
+WOLFSSL_INTERNAL_SOURCE=/path/to/Arduino-wolfSSL/src/src/internal.c \
+  python3 libs/network/SecureNet/test/host/test_record_reservation.py
+```
+
+The shell suite exercises HTTP control flow with scripted transports, including
+reservation timing after the request, cancellation, and resumed transfers. The
+Python harness compiles the production reservation/stop methods and the
+consumer's pinned wolfSSL buffer functions with a bounded allocator, sanitizers,
+and competing clients. It requires the consumer's verified input-retention and
+empty-buffer-release patches. It covers both allocation failure before the fix
+and retained medium/full records afterward; it does not perform TLS handshakes
+or measure device heap. Consumers without `FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER`
+use ordinary on-demand record growth without proactive reservation. Reservations
+use wolfSSL's own connection-owned buffer and allocator, with no global allocator
+replacement or cross-client loan.

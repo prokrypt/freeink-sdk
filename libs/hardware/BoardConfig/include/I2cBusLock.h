@@ -18,6 +18,7 @@
 #ifndef ESP_PLATFORM
 // Host tests: single-threaded, no FreeRTOS. The lock is a no-op.
 namespace freeink {
+inline void enableI2cBusLock() {}
 class I2cBusLock {
  public:
   template <typename Bus = int>
@@ -29,6 +30,9 @@ class I2cBusLock {
 #include <freertos/semphr.h>
 
 namespace freeink {
+
+// Always on here (every board), so the upstream opt-in is a no-op.
+inline void enableI2cBusLock() {}
 
 // Static storage: no heap, created once on first use (thread-safe local statics).
 inline SemaphoreHandle_t i2cBusMutex(const TwoWire& wire) {

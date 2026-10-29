@@ -300,6 +300,7 @@ bool Rtc::cancelWakeTimer() {
 }
 
 bool Rtc::armWakeTimer(const uint32_t seconds) {
+  freeink::I2cBusLock bus(sensorWire());  // direct transfers below, not only helpers
   if (!begun_ || BoardConfig::ACTIVE.sensors.rtcType != BoardConfig::RtcType::Rx8130 || seconds == 0 ||
       seconds > 65535UL * 60UL)
     return false;
