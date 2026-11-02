@@ -844,6 +844,9 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // makeDuRedriveLuts instead.
   const bool selectivePaint = paintDestination && _panelGrayValid && _grayBase != nullptr && _grayMask != nullptr &&
                               fb != nullptr;
+  // Only gray pixels swing, so AA text edges show no flash; a large gray area
+  // (a picture) does, so over 10% of the panel the paint is planned as one.
+  const bool selectiveHolds = selectivePaint && _grayMaskPixels * 10 <= _bufferSize * 8;
   // Full and Half use the clearing OTP GC waveform; only an explicit Fast
   // request may use the differential DU partial (PTIN/PTOUT). Half keeps the
   // true previous frame in DTM1 so the OTP runs real transitions and holds. A
@@ -875,7 +878,7 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
   // plans only the paint; its GC swing shows at DRF.
   if (paintDestination) {
     const bool paintExpLut = gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut);
-    planFlash(bwSwingFrame(true, paintExpLut, true, selectivePaint, false, coldScaledFrames(kPaintFrames)) >= 0,
+    planFlash(bwSwingFrame(true, paintExpLut, true, selectiveHolds, false, coldScaledFrames(kPaintFrames)) >= 0,
               Uc8179FlashKind::Paint);
   } else {
     planFlash(bwSwingFrame(fast, expLut, duScrub, false, nullFrames != 0, scrubFrames) >= 0,
@@ -920,18 +923,19 @@ bool Uc8179Driver::displayStart(EpdBus& bus, const uint8_t* fb, const uint8_t* p
     // true and complement OLD stays balanced.
     if (selectivePaint) {
       streamPlane(bus, CMD_DTM1, _grayMask);
-      LOG_DBG("EPD", "8179: selective exit paint (gray pixels + changes only)");
+      LOG_DBG("EPD", "8179: selective exit paint (gray pixels + changes only), gray %u%%",
+              static_cast<unsigned>(_grayMaskPixels * 100 / (_bufferSize * 8)));
     } else {
       streamPlane(bus, CMD_DTM1, fb, true);
     }
     streamPlane(bus, CMD_DTM2, fb);
     _scrubLutFrames = coldScaledFrames(kPaintFrames);
     _complementOldPlane = true;
-    _selectivePaint = selectivePaint;
+    _selectiveHolds = selectiveHolds;
     startBwRefresh(bus, true);
     _scrubLutFrames = 0;
     _complementOldPlane = false;
-    _selectivePaint = false;
+    _selectiveHolds = false;
     bus.waitRefreshComplete(" 8179_BW_TARGET_DRF");
     swingEnd(gDrfStartMs);
     bus.cmd(CMD_PARTIAL_OUT);
@@ -1067,12 +1071,12 @@ void Uc8179Driver::startBwRefresh(EpdBus& bus, bool fast) {
   // swings held whites for its last 2n frames, except under a Softfast page's
   // gray base (kk3: that turn shows no flash). OTP Fast, DU transitions and
   // null hold. A selective exit paint swings only the gray (AA edge) pixels,
-  // so the screen shows no flash: the Softfast turn between two gray pages and
-  // a menu or the drawer over gray in either mode (log
-  // 20261001T021833Z-2c6751af L4101 Softfast turn, L2712/L3878 drawer and
-  // Frontlight panel over Sharpflash gray).
+  // so up to 10% of the panel gray the screen shows no flash: the Softfast
+  // turn between two gray pages and a menu or the drawer over gray in either
+  // mode (log 20261001T021833Z-2c6751af L4101 Softfast turn, L2712/L3878
+  // drawer and Frontlight panel over Sharpflash gray).
   const int swingFrame = bwSwingFrame(fast, gExpActive && (gKbdExp.flags & Uc8179KbdExperiment::KbdLut),
-                                     _complementOldPlane, _selectivePaint, _nullLut, _scrubLutFrames);
+                                     _complementOldPlane, _selectiveHolds, _nullLut, _scrubLutFrames);
   swingStart(swingFrame, !fast ? &gGcFrameUs : kbdLut && !_nullLut ? &gDuFrameUs : nullptr,
              !fast ? 1 : 2 * frames, !gExpPll, !fast ? Uc8179FlashKind::Full : Uc8179FlashKind::Paint);
   gDrfStartMs = millis();
@@ -1361,6 +1365,7 @@ void Uc8179Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
       for (uint32_t i = 0; i < _bufferSize; i++) _grayBase[i] = static_cast<uint8_t>(_grayBase[i] | lsb[i]);
     }
     if (_grayMask != nullptr) memcpy(_grayMask, lsb, _bufferSize);  // copyGrayscaleMsb ORs in msb
+    _grayMaskPixels = 0;  // counted there
     streamPlane(bus, CMD_DTM1, _grayBase);
     _absoluteGrayPlanes = true;
   } else {
@@ -1388,7 +1393,12 @@ void Uc8179Driver::copyGrayscaleMsb(EpdBus& bus, const uint8_t* msb) {
     // Gray pixels: msb (== plane0 ^ plane1, the light/dark rows) plus any lsb
     // bit, so an lsb-only pixel (not a valid mask pair) is never trusted as B/W.
     if (_grayMask != nullptr) {
-      for (uint32_t i = 0; i < _bufferSize; i++) _grayMask[i] = static_cast<uint8_t>(_grayMask[i] | msb[i]);
+      uint32_t pixels = 0;
+      for (uint32_t i = 0; i < _bufferSize; i++) {
+        _grayMask[i] = static_cast<uint8_t>(_grayMask[i] | msb[i]);
+        pixels += __builtin_popcount(_grayMask[i]);
+      }
+      _grayMaskPixels = pixels;
     }
     // The stock gray_aa routine restores BOTH controller planes to its B/W base
     // after the gray activation. Recover that base now while plane0 and the MSB
