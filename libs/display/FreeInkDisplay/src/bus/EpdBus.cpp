@@ -2,6 +2,7 @@
 #include <Logging.h>
 
 #include <BoardConfig.h>
+#include <cstdio>
 #include <driver/gpio.h>
 #if defined(ARDUINO) && defined(CONFIG_PM_ENABLE) && CONFIG_PM_ENABLE
 #include <esp_pm.h>
@@ -23,6 +24,50 @@
 // its board-support header instead.
 extern "C" void freeink_board_epd_power(bool enabled) __attribute__((weak));
 extern "C" void freeink_board_epd_reset(bool high) __attribute__((weak));
+
+// Optional panel command trace (debug builds only: -DFREEINK_EPD_TRACE=1). One
+// "[EPD] c=XX len=N b0 .. b7" log line per command (first 8 data bytes), printed
+// when the next command starts or a BUSY wait ends, so the data length is known.
+// x4prosim's epdtrace.py diffs it against the emulator's uc8179_cmd trace.
+// Adapted from kycube/x4pro-emu firmware-patches/freeink-sdk-epd-trace.patch
+// (Copyright (c) 2026 KFloyd.com, MIT License).
+#if defined(FREEINK_EPD_TRACE) && FREEINK_EPD_TRACE
+namespace {
+struct EpdTrace {
+  int cmd = -1;
+  uint32_t len = 0;
+  uint8_t head[8] = {};
+  void flush() {
+    if (cmd < 0) return;
+    char hex[3 * sizeof(head) + 1] = "";
+    const uint32_t n = len < sizeof(head) ? len : sizeof(head);
+    for (uint32_t i = 0; i < n; i++) snprintf(hex + 3 * i, 4, " %02X", head[i]);
+    LOG_INF("EPD", "c=%02X len=%lu%s", cmd, static_cast<unsigned long>(len), hex);
+    cmd = -1;
+  }
+  void command(uint8_t c) {
+    flush();
+    cmd = c;
+    len = 0;
+  }
+  void data(const uint8_t* d, uint32_t n) {
+    for (uint32_t i = 0; i < n && len + i < sizeof(head); i++) head[len + i] = d[i];
+    len += n;
+  }
+  void byte(uint8_t b) { data(&b, 1); }
+};
+EpdTrace g_epdTrace;
+}  // namespace
+#define EPD_TRACE_CMD(c) g_epdTrace.command(c)
+#define EPD_TRACE_DATA(d, n) g_epdTrace.data((d), (n))
+#define EPD_TRACE_BYTE(b) g_epdTrace.byte(b)
+#define EPD_TRACE_FLUSH() g_epdTrace.flush()
+#else
+#define EPD_TRACE_CMD(c)
+#define EPD_TRACE_DATA(d, n)
+#define EPD_TRACE_BYTE(b)
+#define EPD_TRACE_FLUSH()
+#endif
 
 namespace {
 // EPD power/reset for boards without direct GPIOs: SDK board support first,
@@ -118,17 +163,20 @@ void EpdBus::Transaction::end() {
 uint8_t EpdBus::Transaction::transfer(uint8_t d) { return SPI.transfer(d); }
 
 void EpdBus::Transaction::cmd(uint8_t c) {
+  EPD_TRACE_CMD(c);
   digitalWrite(_bus->_pins.dc, LOW);
   SPI.transfer(c);
   digitalWrite(_bus->_pins.dc, HIGH);
 }
 
 void EpdBus::Transaction::data(uint8_t d) {
+  EPD_TRACE_BYTE(d);
   digitalWrite(_bus->_pins.dc, HIGH);
   SPI.transfer(d);
 }
 
 void EpdBus::Transaction::writeBytes(const uint8_t* d, uint16_t len) {
+  EPD_TRACE_DATA(d, len);
   digitalWrite(_bus->_pins.dc, HIGH);
   SPI.writeBytes(d, len);
 }
@@ -247,6 +295,7 @@ EpdBus::Transaction EpdBus::beginTxn() {
 }
 
 void EpdBus::cmd(uint8_t c) {
+  EPD_TRACE_CMD(c);
   auto txn = transaction();
   digitalWrite(_pins.dc, LOW);
   digitalWrite(_pins.cs, LOW);
@@ -254,6 +303,7 @@ void EpdBus::cmd(uint8_t c) {
 }
 
 void EpdBus::data(uint8_t d) {
+  EPD_TRACE_BYTE(d);
   auto txn = transaction();
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
@@ -261,6 +311,7 @@ void EpdBus::data(uint8_t d) {
 }
 
 void EpdBus::data(const uint8_t* d, uint16_t len) {
+  EPD_TRACE_DATA(d, len);
   auto txn = transaction();
   digitalWrite(_pins.dc, HIGH);
   digitalWrite(_pins.cs, LOW);
@@ -268,6 +319,8 @@ void EpdBus::data(const uint8_t* d, uint16_t len) {
 }
 
 void EpdBus::cmdData(uint8_t c, const uint8_t* d, uint16_t len) {
+  EPD_TRACE_CMD(c);
+  if (len > 0 && d != nullptr) EPD_TRACE_DATA(d, len);
   auto txn = transaction();
   digitalWrite(_pins.cs, LOW);
   digitalWrite(_pins.dc, LOW);
@@ -315,6 +368,7 @@ bool EpdBus::readData(uint8_t* out, uint8_t len) {
 
 bool EpdBus::cmdReadStream(uint8_t cmd, uint8_t* out, uint32_t len) {
   if (_coCs >= 0 || _pins.mosi < 0 || _pins.sclk < 0 || _pins.cs < 0 || _pins.dc < 0) return false;
+  EPD_TRACE_CMD(cmd);  // read bytes are not traced (len=0), as in the emulator
   SPI.end();
   pinMode(_pins.mosi, OUTPUT);
   pinMode(_pins.sclk, OUTPUT);
@@ -461,6 +515,7 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
 
+  EPD_TRACE_FLUSH();
   if (tag) LOG_DBG("EPD", "Wait complete:%s (%lu ms)", tag, millis() - start);
 }
 
@@ -544,6 +599,7 @@ void EpdBus::waitRefreshComplete(const char* tag) {
   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
 
   detachInterrupt(digitalPinToInterrupt(_pins.busy));
+  EPD_TRACE_FLUSH();
   if (tag) LOG_DBG("EPD", "Wait complete:%s (%lu ms)", tag, millis() - start);
 }
 
