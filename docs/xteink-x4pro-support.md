@@ -32,8 +32,7 @@ only for diagnostics, because flashing an image from another unit can overwrite 
 
 The SSD1677 bring-up notes below describe that controller specifically. See
 [grayscale capabilities](grayscale-capabilities.md) for the current upload
-contracts and the [Licorice firmware audit](xteink-x4pro-licorice-analysis.md)
-for version-scoped controller findings.
+contracts.
 
 ## Display — SSD1677, 800×480
 
