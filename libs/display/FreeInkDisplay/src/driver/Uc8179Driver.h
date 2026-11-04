@@ -178,6 +178,7 @@ class Uc8179Driver : public PanelDriver {
   // With _grayBase it gives the panel's true state for the selective exit paint.
   uint8_t* _grayMask = nullptr;
   bool _panelGrayValid = false;  // _grayBase + _grayMask describe what the panel shows
+  uint32_t _grayMaskPixels = 0;  // gray pixels (set bits) in _grayMask
   uint8_t _otpTb[11] = {};    // OTP temperature boundaries (readOtpVcom)
   uint8_t _otpVcom[12] = {};  // OTP VCOM_DC per temperature range
   uint8_t _otpTrs = 0;        // ranges read; 0 = gray packet VCOM
@@ -200,7 +201,7 @@ class Uc8179Driver : public PanelDriver {
   // Register-LUT frames for this refresh's Half-as-DU-scrub (0 = none).
   uint8_t _scrubLutFrames = 0;
   bool _complementOldPlane = false;  // this refresh's DTM1 is the target's complement (DU scrub)
-  bool _selectivePaint = false;      // ...except B/W pixels, which keep their true OLD
+  bool _selectiveHolds = false;      // ...except B/W pixels (true OLD), and little gray: no flash
   bool _holdBwPass = false;          // this direct gray pass runs the hold set (smooth gray)
   // Force the first refresh after begin() to a full flash, so a partial update
   // never runs against an unknown on-screen state (e.g. a retained boot image).
