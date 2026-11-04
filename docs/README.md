@@ -37,5 +37,4 @@ for the full device list.
 ## Driver provenance
 
 - [Display driver reference coverage](display-driver-references.md): source hierarchy and change policy.
-- [X4 Pro Licorice firmware audit](xteink-x4pro-licorice-analysis.md): findings tied to specific OEM firmware images.
 - [Attribution](../NOTICE) and [license](../LICENSE).
