@@ -528,7 +528,7 @@ bool SDCardManager::sdUsedBytes(uint64_t& usedBytes) {
     const uint64_t clusterCount = vol().clusterCount();
     cachedUsedBytesAvailable = freeClusters >= 0;
     if (!cachedUsedBytesAvailable) {
-      if (Serial) Serial.printf("[%lu] [SD] Failed to count free clusters\n", millis());
+      LOG_ERR("SD", "Failed to count free clusters");  // Serial here breaks consumers whose Logging.h remaps it
       cachedUsedBytes = 0;
     } else {
       const uint64_t cappedFree = (static_cast<uint64_t>(freeClusters) > clusterCount)
