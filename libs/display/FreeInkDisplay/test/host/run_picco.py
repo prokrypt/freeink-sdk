@@ -20,10 +20,10 @@ def build(board, device_macro, test_cpp, directory):
             shutil.copy2(LIB / f"src/driver/{name}Driver.{ext}", root / f"src/driver/{name}Driver.{ext}")
     shutil.copy2(LIB / "src/driver/PanelDriver.h", root / "src/driver/PanelDriver.h")
     shutil.copy2(LIB / "include/GrayscaleCapabilities.h", root / "include/GrayscaleCapabilities.h")
-    for name in ("Ssd1677Luts.h", "Ssd2677Luts.h"):
-        shutil.copy2(LIB / f"src/lut/{name}", root / f"src/lut/{name}")
+    for lut in (LIB / "src/lut").glob("*.h"):
+        shutil.copy2(lut, root / "src/lut" / lut.name)
     shutil.copy2(HERE / "pro_stubs/EpdBus.h", root / "src/bus/EpdBus.h")
-    for name in ("esp_heap_caps.h", "sdkconfig.h"):
+    for name in ("Logging.h", "esp_heap_caps.h", "sdkconfig.h"):
         shutil.copy2(HERE / "pro_stubs" / name, root / name)
     # SPI stub with the shared-bus pin re-attach the Sticky panel probe uses.
     (root / "SPI.h").write_text((HERE / "pro_stubs/SPI.h").read_text() + """

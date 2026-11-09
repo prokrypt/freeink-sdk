@@ -162,7 +162,7 @@ void FreeInkDisplay::setDisplayM5PaperColor() {
 void FreeInkDisplay::selectDriver() {
   // Selection is purely _panelSel + the linked FREEINK_DRIVER_* set — no device
   // names. Multi-driver C3 builds pick X3 vs X4 via setDisplayX3(); single-driver
-  // builds (M5/Murphy/de-link/LilyGo) fall through to the one linked driver below.
+  // builds (M5/Murphy/Silkscreen/LilyGo) fall through to the one linked driver below.
   switch (_panelSel) {
 #if FREEINK_DRIVER_M5_OFFICIAL || FREEINK_DRIVER_ED2208
     case PanelSel::M5:
@@ -654,6 +654,15 @@ bool FreeInkDisplay::invertedGrayBlocked() const {
   return _inverted && !(_invertedTextGray && _driver != nullptr && _driver->supportsInvertedOverlayGray());
 }
 
+void FreeInkDisplay::powerOffBetweenFrames() {
+#if FREEINK_DEVICE_PICCO
+  if (!_driver || !BoardConfig::isPicco()) return;
+  DisplayPmLock pmLock;
+  waitRefreshComplete();
+  _driver->powerOffBetweenFrames(_bus);
+#endif
+}
+
 bool FreeInkDisplay::supportsAsyncRefresh() const {
   return !_inverted && !_inversionDirty && _driver != nullptr && _driver->supportsAsyncDisplay();
 }
@@ -967,8 +976,8 @@ void FreeInkDisplay::cancelGrayscalePass() {
 bool FreeInkDisplay::acceptGrayscaleRows(unsigned plane, const uint8_t* data, uint16_t y, uint16_t rows) {
   if (_grayscaleMode == GrayscaleMode::Overlay) return true;
   const auto h = getDisplayHeight();
-  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) ||
-      y != _grayRows[plane] || y >= h || rows > h - y) {
+  if (_grayPassFailed || !data || !rows || (plane == 1 && _grayRows[0] == 0) || y != _grayRows[plane] || y >= h ||
+      rows > h - y) {
     _grayPassFailed = true;
     return false;
   }
@@ -1083,9 +1092,7 @@ void FreeInkDisplay::writeGrayscalePlaneStrip(GrayPlane plane, const uint8_t* ro
                                     rows, yStart, numRows);
 }
 
-bool FreeInkDisplay::supportsBusyGrayscaleStaging() const {
-  return grayscaleCapabilities().stagingWhileBusy;
-}
+bool FreeInkDisplay::supportsBusyGrayscaleStaging() const { return grayscaleCapabilities().stagingWhileBusy; }
 
 void FreeInkDisplay::prepareGrayscaleTarget() {
   if (grayscaleCapabilities().stagingWhileBusy) {
@@ -1093,13 +1100,9 @@ void FreeInkDisplay::prepareGrayscaleTarget() {
   }
 }
 
-bool FreeInkDisplay::supportsStripGrayscale() const {
-  return grayscaleCapabilities().stripUploads;
-}
+bool FreeInkDisplay::supportsStripGrayscale() const { return grayscaleCapabilities().stripUploads; }
 
-bool FreeInkDisplay::combinesGrayscaleBase() const {
-  return grayscaleCapabilities().base == GrayscaleBase::Combined;
-}
+bool FreeInkDisplay::combinesGrayscaleBase() const { return grayscaleCapabilities().base == GrayscaleBase::Combined; }
 
 void FreeInkDisplay::cleanupGrayscaleBuffers(const uint8_t* bwBuffer) {
   cancelGrayscalePass();

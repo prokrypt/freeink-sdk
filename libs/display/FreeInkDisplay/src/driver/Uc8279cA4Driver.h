@@ -43,6 +43,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void initController(EpdBus& bus, Session session);
   void ensurePowerOn(EpdBus& bus);
   void loadFullLut(EpdBus& bus);
+  void loadHalfFullLut(EpdBus& bus);
   void loadFastLut(EpdBus& bus);
   void loadGrayLut(EpdBus& bus);
   void writeFrame(EpdBus& bus, uint8_t command, const uint8_t* fb, bool invert = false);
@@ -50,7 +51,7 @@ class Uc8279cA4Driver : public PanelDriver {
   void writeGray3Codes(EpdBus& bus, bool dtm1, bool& anyBlack, bool& anyWhiteClear);
   void loadGray3Lut(EpdBus& bus, bool anyBlack, bool anyWhiteClear);
   void fillControllerRam(EpdBus& bus, uint8_t command, uint8_t fill);
-  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr);
+  void refresh(EpdBus& bus, const uint8_t* bwBaseline = nullptr, bool holdPower = false);
   uint8_t* allocateGrayBuffer();
   bool allocateGray3();
 

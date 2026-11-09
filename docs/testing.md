@@ -4,6 +4,28 @@ Run these commands from the repository root. Host tests use production code
 with desktop adapters or hardware stubs; they do not require a device or PlatformIO.
 You need a C/C++ compiler with C++17 support, Python 3, and a POSIX shell.
 
+## Serial transport
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_serial.py
+```
+
+Checks that native USB Serial/JTAG output is serviced without a blocking flush,
+and that UART, TinyUSB, Sticky's UART bridge, and simulator builds remain no-ops.
+Device tests must also verify timely acknowledgements and intact transfer data.
+
+## Paper Mono bring-up
+
+```sh
+python3 libs/hardware/BoardConfig/test/host/run_papermono_boot.py
+```
+
+Runs `PaperMonoBoard.h` against a model PMIC and IO expander. An expander that
+misses its first probes after a PMIC restart must still come up within the boot
+wait, whichever manager starts first. A failed setup must stay cached, so no rail
+in use is switched off later, and the power button must keep working. A failed
+expander read or mode write must not leave the touch controller in reset.
+
 ## UI, books, credentials, and input
 
 ```sh
@@ -47,6 +69,17 @@ sealed, and the next start must finish the load. It also compiles the EEGO A4
 profile against a model CW2015: the battery-profile check and upload sequence,
 the voltage and percentage conversion, and the ADC fallback when no gauge
 answers.
+
+The battery suite also covers Picco's SGM41562 status as a single register
+snapshot, three-conversion ADC median, charging endpoint and completion state,
+and the allocation-free `BatteryEstimate` presentation filter. The estimator
+checks include unplug settling, low-voltage correction, failed samples, sleep
+reconciliation and retained-state validation.
+The flash-at-near-full regression covers a 4.340 V cell still reporting active
+charging: its stock voltage estimate can reach 100% without inventing charger
+completion. Lower voltage held on USB alone does not become full over time.
+These are model checks; actual voltage calibration, charge termination and power
+usage still need a Picco.
 
 ## Motion sensors
 
@@ -100,8 +133,10 @@ sh libs/hardware/FrontlightManager/test/host/run.sh
 Compiles the Picco frontlight backend and real board profile against a register
 model with a wake-settling interval. Covers the first nonzero brightness write,
 off/on level restoration, warm/cool channels, slider updates without repeated
-wake delays, and retry after a failed wake transaction. Physical light output
-and the actual controller settling time still require a device check.
+wake delays, and retry after a failed wake transaction. Sweeps brightness in both
+directions at all 101 warmth settings, checking fine PWM steps, minimum and maximum
+output, disabled channels at zero PWM, and restoration after off/on. Physical light
+output and the actual controller settling time still require a device check.
 
 ## Display drivers
 
@@ -159,3 +194,12 @@ or measure device heap. Consumers without `FREEINK_WOLFSSL_RETAIN_INPUT_BUFFER`
 use ordinary on-demand record growth without proactive reservation. Reservations
 use wolfSSL's own connection-owned buffer and allocator, with no global allocator
 replacement or cross-client loan.
+
+## Streaming JSON previews
+
+```sh
+sh libs/network/JsonSax/test/host/run.sh
+```
+
+Checks optional bounded string prefixes, unchanged default overflow handling,
+continued parsing after long strings, and rejection of oversized keys under ASan/UBSan.

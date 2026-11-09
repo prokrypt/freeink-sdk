@@ -129,10 +129,14 @@ class InputManager {
   };
 
   // Fixed-size contact snapshot for allocation-free multi-touch polling. `id`
-  // is a controller track ID when `idsStable` is true. Coordinate-only GT911
-  // frames expose frame-local record slots instead, so callers must not retain
+  // is the controller's track ID (GT911) when `idsStable` is true.
+  // Coordinate-only frames — GT911's coordsAtByte0 variant and the EEGO A4's
+  // GSLX680 (hardware-validated 2026-10-29: record top nibbles are always 0)
+  // — expose frame-local record slots instead, so callers must not retain
   // those IDs across frames. `count` is capped at MAX_TOUCH_CONTACTS;
-  // `reportedCount` keeps the controller's actual count so callers can detect
+  // `reportedCount` keeps the frame's actual on-glass contact count (on
+  // GSLX680 the raw controller count also carries home-key, past-glass and
+  // padding records, which are filtered per-contact) so callers can detect
   // truncation and opt into only the contact counts they support.
   static constexpr uint8_t MAX_TOUCH_CONTACTS = 4;
   struct MultiTouchPoint {
@@ -162,10 +166,13 @@ class InputManager {
   bool requestTouchSleep(bool asleep);
   bool touchSleepPending() const { return touchSleepStep != TouchSleepStep::None; }
   bool isTouchAsleep() const { return touchAsleep; }
-  // True for GT911, or when Picco GET_SYSINFO confirms multiple contacts.
+  // True while a GT911 or GSLX680 controller is present, or when the Picco
+  // TMA525C's GET_SYSINFO confirms multiple contacts. Other touch
+  // controllers retain their existing single-contact contract.
   bool supportsMultiTouch() const;
-  // Latest multi-touch contacts, capped at MAX_TOUCH_CONTACTS. Gesture consumers
-  // should check reportedCount for the exact cardinality they support.
+  // Latest multi-touch contacts (GT911, GSLX680, multi-contact Picco),
+  // capped at MAX_TOUCH_CONTACTS. Gesture consumers should check reportedCount
+  // for the exact cardinality they support.
   TouchSnapshot getTouchSnapshot() const;
   // The most recent touch sampled during #update(). valid == false when idle.
   TouchPoint getTouchPoint() const;
@@ -468,6 +475,10 @@ class InputManager {
   void beginFt6336u();
   void pollFt6336u(unsigned long now);
   void beginGslx680();
+  void gslInitBody();
+  static void gslInitTask(void* arg);
+  void waitForTouchInit() const;
+  bool gslInitRunning = false;  // GSLX680 boot task still running (EEGO A4)
   void pollGslx680(unsigned long now);
   static void gslCalibrate(uint16_t rawX, uint16_t rawY, int16_t& screenX, int16_t& screenY);
   bool gslWrite(uint8_t reg, const uint8_t* data, uint8_t len);

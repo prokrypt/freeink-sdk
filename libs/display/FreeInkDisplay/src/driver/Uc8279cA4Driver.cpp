@@ -46,6 +46,12 @@ PanelGeometry Uc8279cA4Driver::geometry() const {
 }
 
 void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
+  // A Gray3 session may have left the rails up: discharge them before reset.
+  if (_screenOn) {
+    bus.cmd(CMD_POWER_OFF);
+    bus.waitBusy(" A4 power-off");
+    _screenOn = false;
+  }
   // EpdBus's generic 2-ms low pulse is too short for this panel.
   const int8_t rst = bus.pins().rst;
   digitalWrite(rst, HIGH);
@@ -57,18 +63,19 @@ void Uc8279cA4Driver::hardwareReset(EpdBus& bus) {
 }
 
 void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
-  // Gray3 uses stock V1.0.3's reader session and four-gray stock V1.3.0's image session.
-  // B/W keeps a stronger drive because this driver changes UI screens with fast refreshes.
-  const bool fourGray = session == Session::FourGray;
+  // Gray3 and four-gray use stock V1.0.3's gray session (its lockscreen paint).
+  // B/W keeps stronger rails because this driver changes UI screens with fast
+  // refreshes. Keep stock VCOM_DC for every session: reduced B/W settings
+  // caused the image to deteriorate while idle, even after panel power-off.
+  // Check B/W-to-gray ghosting on hardware when changing this setting.
   const uint8_t panel[] = {0x3f, 0x4a};
-  const uint8_t gray3Power[] = {0x03, 0x00, 0x72, 0x72};
-  const uint8_t fourGrayPower[] = {0x03, 0x00, 0x78, 0x78, 0x17};
+  const uint8_t grayPower[] = {0x03, 0x00, 0x72, 0x72};
   const uint8_t bwPower[] = {0x43, 0x00, 0x78, 0x78, 0x17};
   const uint8_t booster[] = {0x25, 0x25, 0x3c};
   const uint8_t resolution[] = {0x03, 0x00, 0x02, 0x58};  // 768x600
-  const uint8_t interval[] = {0x00, 0x00, static_cast<uint8_t>(fourGray ? 0x20 : 0x00), 0x00};
+  const uint8_t interval[] = {0x00, 0x00, 0x00, 0x00};
   const uint8_t powerOffSequence = 0x20;
-  const uint8_t vcom = session == Session::Bw ? 0x24 : fourGray ? 0x20 : 0x32;
+  const uint8_t vcom = 0x32;
   const uint8_t pll = 0x0f;
   const uint8_t tcon = 0x02;
 
@@ -76,10 +83,8 @@ void Uc8279cA4Driver::initController(EpdBus& bus, const Session session) {
   bus.cmdData(CMD_POWER_OFF_SEQUENCE, &powerOffSequence, 1);
   if (session == Session::Bw)
     bus.cmdData(CMD_POWER_SETTING, bwPower, sizeof(bwPower));
-  else if (fourGray)
-    bus.cmdData(CMD_POWER_SETTING, fourGrayPower, sizeof(fourGrayPower));
   else
-    bus.cmdData(CMD_POWER_SETTING, gray3Power, sizeof(gray3Power));
+    bus.cmdData(CMD_POWER_SETTING, grayPower, sizeof(grayPower));
   bus.cmdData(CMD_BOOSTER_SOFT_START, booster, sizeof(booster));
   bus.cmdData(CMD_VCOM_DC, &vcom, 1);
   bus.cmdData(CMD_PLL_CONTROL, &pll, 1);
@@ -110,6 +115,24 @@ void Uc8279cA4Driver::loadFullLut(EpdBus& bus) {
   }
 }
 
+// Stock's lockscreen pre-clear: the GC waveform with every phase's frame count
+// halved, (b & 0xc0) | (((b & 0x3f) + 1) >> 1) on bytes 1-4 of each 7-byte group.
+void Uc8279cA4Driver::loadHalfFullLut(EpdBus& bus) {
+  const uint8_t* const lut[] = {A4_UC8279C_LUT_20, A4_UC8279C_LUT_21, A4_UC8279C_LUT_22, A4_UC8279C_LUT_23,
+                                A4_UC8279C_LUT_24};
+  for (uint8_t i = 0; i < 5; ++i) {
+    uint8_t record[A4_UC8279C_LUT_LENGTH];
+    memcpy(record, lut[i], sizeof(record));
+    for (uint8_t g = 0; g + 7 <= sizeof(record); g += 7) {
+      for (uint8_t k = 1; k <= 4; ++k) {
+        const uint8_t b = record[g + k];
+        record[g + k] = static_cast<uint8_t>((b & 0xc0) | (((b & 0x3f) + 1) >> 1));
+      }
+    }
+    bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), record, sizeof(record));
+  }
+}
+
 void Uc8279cA4Driver::loadFastLut(EpdBus& bus) {
   const uint8_t* const lut[] = {A4_UC8279C_FAST_LUT_20, A4_UC8279C_FAST_LUT_21, A4_UC8279C_FAST_LUT_22,
                                 A4_UC8279C_FAST_LUT_23, A4_UC8279C_FAST_LUT_24};
@@ -118,6 +141,8 @@ void Uc8279cA4Driver::loadFastLut(EpdBus& bus) {
   }
 }
 
+// Stock Factory B, unpatched: every row nets zero (absolute planes), and a
+// lengthened white pulse in record 0x21 would leave it -9 frames per refresh.
 void Uc8279cA4Driver::loadGrayLut(EpdBus& bus) {
   for (uint8_t i = 0; i < 5; ++i) {
     bus.cmdData(static_cast<uint8_t>(CMD_LUT_VCOM + i), A4_UC8279C_GRAY_LUT + i * A4_UC8279C_GRAY_RECORD_LENGTH,
@@ -148,14 +173,18 @@ void Uc8279cA4Driver::fillControllerRam(EpdBus& bus, const uint8_t command, cons
   bus.fillPlane(command, fill, CONTROLLER_HEIGHT, _widthBytes);
 }
 
-void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline) {
+void Uc8279cA4Driver::refresh(EpdBus& bus, const uint8_t* bwBaseline, const bool holdPower) {
   ensurePowerOn(bus);
   bus.cmd(CMD_DISPLAY_REFRESH);
   bus.waitBusy(" A4 refresh");
   // The next differential update diffs against this baseline.
   if (bwBaseline) writeFrame(bus, CMD_DTM1, bwBaseline);
-  // Always power off: leaving the panel powered between refreshes made later
-  // four-gray images show earlier screens as ghosts on hardware.
+  // Gray3 page turns keep the rails up, as stock V1.1.3 does for the whole
+  // reader session: powering off after each anti-aliased page let it drift and
+  // ghost while it sat. Every other refresh powers off: left powered, later
+  // four-gray images showed earlier screens as ghosts. hardwareReset() and
+  // deepSleep() power a held panel off before anything else drives it.
+  if (holdPower) return;
   bus.cmd(CMD_POWER_OFF);
   bus.waitBusy(" A4 power-off");
   _screenOn = false;
@@ -245,7 +274,8 @@ void Uc8279cA4Driver::writeGrayscalePlaneStrip(EpdBus& bus, const GrayPlane plan
   if (!rows || numRows == 0 || yStart + numRows > _height) return;
   uint8_t*& target = plane == GrayPlane::Lsb ? _grayLsb : _grayMsb;
   if (!target) target = allocateGrayBuffer();
-  if (target) memcpy(target + static_cast<size_t>(yStart) * _widthBytes, rows, static_cast<size_t>(numRows) * _widthBytes);
+  if (target)
+    memcpy(target + static_cast<size_t>(yStart) * _widthBytes, rows, static_cast<size_t>(numRows) * _widthBytes);
 }
 
 void Uc8279cA4Driver::copyGrayscaleLsb(EpdBus& bus, const uint8_t* lsb) {
@@ -321,7 +351,7 @@ void Uc8279cA4Driver::showGray3(EpdBus& bus) {
   const uint8_t interval = 0x00;
   bus.cmdData(CMD_VCOM_DATA_INTERVAL, &interval, 1);
   loadGray3Lut(bus, anyBlack, anyWhiteClear);
-  refresh(bus);
+  refresh(bus, nullptr, /*holdPower=*/true);
   const size_t n = static_cast<size_t>(_widthBytes) * _height;
   memcpy(_gray3White, _grayLsb, n);
   memcpy(_gray3Middle, _grayMsb, n);
@@ -380,6 +410,22 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   _gray3HistoryValid = false;
   _gray3Session = false;
 
+  // Stock V1.0.3's lockscreen sequence. Pre-clear ("GC-black-2x-half") in the
+  // B/W session: black to DTM2, no DTM1 write, two refreshes with the halved
+  // GC waveform.
+  if (_grayControllerMode) {
+    hardwareReset(bus);
+    initController(bus, Session::Bw);
+  }
+  ensurePowerOn(bus);
+  const uint8_t clearInterval = 0x97;
+  bus.cmdData(CMD_VCOM_DATA_INTERVAL, &clearInterval, 1);
+  loadHalfFullLut(bus);
+  fillControllerRam(bus, CMD_DTM2, 0x00);
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" A4 refresh");
+  refresh(bus);
+
   hardwareReset(bus);
   initController(bus, Session::FourGray);
   // Stock wire order: MSB -> DTM1 (0x10), LSB -> DTM2 (0x13), uninverted, so
@@ -389,7 +435,14 @@ void Uc8279cA4Driver::displayGray(EpdBus& bus, const uint8_t* fb, const bool tur
   // Both gray planes are fully written, replacing the unknown startup state.
   _firstRefreshPending = false;
   loadGrayLut(bus);
-  refresh(bus);
+  ensurePowerOn(bus);
+  bus.cmd(CMD_DISPLAY_REFRESH);
+  bus.waitBusy(" A4 refresh");
+  // Stock re-seeds the old plane white before powering off.
+  fillControllerRam(bus, CMD_DTM1, 0xff);
+  bus.cmd(CMD_POWER_OFF);
+  bus.waitBusy(" A4 power-off");
+  _screenOn = false;
   _redriveAfterGray = true;
 }
 
@@ -398,7 +451,8 @@ void Uc8279cA4Driver::cleanupGrayscaleBuffers(EpdBus& bus, const uint8_t* bw) {
   // A stashed base whose gray pass never ran (out of memory, canceled) still has
   // to reach the panel. After a gray pass there is nothing to restore: the next
   // B/W refresh re-initializes the controller and re-drives every pixel.
-  if (_basePending && _grayBase) display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
+  if (_basePending && _grayBase)
+    display(bus, _grayBase, nullptr, _cleanupPage ? RefreshMode::Half : RefreshMode::Fast, false);
   _basePending = false;
 }
 
