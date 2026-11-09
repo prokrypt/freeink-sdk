@@ -26,6 +26,11 @@ class FrontlightManager {
   // duty). 0 turns the light off. On a warm/cool board this is the TOTAL
   // brightness; the current color-temperature split is preserved.
   void setBrightness(uint8_t percent);
+  // The same curve at 1/256 % (0..25600), for fades: linear between whole-% duties,
+  // written with the LEDC's 4 dither bits where FREEINK_FRONTLIGHT_LS drives it
+  // (14-bit steps on a 10-bit timer), rounded to whole LSBs elsewhere.
+  // setBrightness(p) == setBrightnessFine(p * 256).
+  void setBrightnessFine(uint16_t q8);
 
   // Set brightness with 8-bit control and a perceptual curve. Level 1 maps to the
   // smallest non-zero hardware duty, making dim night reading possible.
@@ -168,9 +173,10 @@ class FrontlightManager {
   bool _i2cConfigured = false;
 #endif
   uint8_t _brightness = 0;
+  uint16_t _brightnessQ8 = 0;  // fine brightness (1/256 %); _brightness is it rounded up
   uint8_t _brightnessLevel = 0;
   bool _useLevel = false;
-  // Duty written by the previous apply(); 0 = the light was off. The off->on
+  // Duty written by the previous apply() (1/16 LSB); 0 = the light was off. The off->on
   // edge is what arms the boost kick-start (see apply()).
   uint32_t _lastTotalDuty = 0;
   uint8_t _lastBrightness = 50;
