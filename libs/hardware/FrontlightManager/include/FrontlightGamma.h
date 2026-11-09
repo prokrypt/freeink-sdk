@@ -30,4 +30,16 @@ constexpr uint32_t perceptualDuty(uint32_t pct, uint32_t full) {
   return duty ? duty : 1u;
 }
 
+// Fine brightness in 1/256 % (0..25600) -> duty in 1/16 LSB. Linear between the
+// whole-% duties above, so every whole % lands on exactly perceptualDuty() * 16
+// and a fade between two of them gets up to 16 sub-steps per LSB (LEDC dither).
+constexpr uint32_t perceptualDuty16(uint32_t q8, uint32_t full) {
+  if (q8 > 100u * 256u) q8 = 100u * 256u;
+  const uint32_t pct = q8 >> 8, frac = q8 & 255u;
+  const uint32_t lo = perceptualDuty(pct, full) * 16u;
+  if (frac == 0) return lo;
+  const uint32_t hi = perceptualDuty(pct + 1u, full) * 16u;
+  return lo + ((hi - lo) * frac + 128u) / 256u;
+}
+
 }  // namespace FrontlightGamma

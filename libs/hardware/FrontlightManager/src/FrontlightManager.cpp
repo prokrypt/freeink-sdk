@@ -14,6 +14,7 @@
 // KEEP_ALIVE channels — the driver manages it through this same header). Pinned
 // IDF 5.5; re-check on IDF bumps.
 #include <esp_private/esp_sleep_internal.h>
+#include <soc/ledc_struct.h>  // LEDC duty register: its 4 dither bits (see writeChannel)
 #endif
 
 // Logging: use the firmware's Logging.h LOG_INF facility, NOT esp_log. The
@@ -73,9 +74,9 @@ void pm1FrontlightWrite(uint32_t pct) {
 constexpr uint8_t LEDC_CH_COOL = 0;
 constexpr uint8_t LEDC_CH_WARM = 1;
 
-// Apply the board's output polarity to a logical 0..full LED duty.
-uint32_t physicalDuty(uint32_t logicalDuty, uint32_t full, bool activeHigh) {
-  return activeHigh ? logicalDuty : full - logicalDuty;
+// Apply the board's output polarity to a logical LED duty. Both in 1/16 LSB (0..full*16).
+uint32_t physicalDuty(uint32_t logicalDuty16, uint32_t full, bool activeHigh) {
+  return activeHigh ? logicalDuty16 : full * 16u - logicalDuty16;
 }
 
 #ifdef FREEINK_FRONTLIGHT_LS
@@ -120,8 +121,12 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   // for KEEP_ALIVE channels (IDF 5.5), so no explicit gpio_sleep_sel_dis here.
   return ledc_channel_config(&chan) == ESP_OK;
 }
-void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) {
-  ledc_set_duty(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch), duty);
+void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty16) {
+  ledc_set_duty(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch), duty16 >> 4);
+  // ledc_set_duty() writes only the integer part (duty << 4). The register's low 4 bits
+  // dither: that many of every 16 PWM cycles run one tick longer (ESP32-S3 TRM, LEDC
+  // "Duty Cycle Dithering"), so a fade gets 14-bit steps at the same frequency.
+  if (duty16 & 15u) LEDC.channel_group[LEDC_LOW_SPEED_MODE].channel[ch].duty.duty = duty16;
   ledc_update_duty(LEDC_LOW_SPEED_MODE, static_cast<ledc_channel_t>(ch));
 }
 void detachChannel(int8_t /*gpio*/, uint8_t ch) {
@@ -131,7 +136,8 @@ void detachChannel(int8_t /*gpio*/, uint8_t ch) {
 }
 #elif defined(ARDUINO) && ESP_ARDUINO_VERSION_MAJOR >= 3
 bool attachChannel(int8_t gpio, uint8_t /*ch*/, uint32_t freq, uint8_t bits) { return ledcAttach(gpio, freq, bits); }
-void writeChannel(int8_t gpio, uint8_t /*ch*/, uint32_t duty) { ledcWrite(gpio, duty); }
+// No dither bits here: round to whole LSBs (whole-% duties are exact multiples of 16).
+void writeChannel(int8_t gpio, uint8_t /*ch*/, uint32_t duty16) { ledcWrite(gpio, (duty16 + 8u) >> 4); }
 void detachChannel(int8_t gpio, uint8_t /*ch*/) { ledcDetach(gpio); }
 #else
 bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
@@ -139,7 +145,7 @@ bool attachChannel(int8_t gpio, uint8_t ch, uint32_t freq, uint8_t bits) {
   ledcAttachPin(gpio, ch);
   return true;
 }
-void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty) { ledcWrite(ch, duty); }
+void writeChannel(int8_t /*gpio*/, uint8_t ch, uint32_t duty16) { ledcWrite(ch, (duty16 + 8u) >> 4); }
 void detachChannel(int8_t gpio, uint8_t /*ch*/) { ledcDetachPin(gpio); }
 #endif
 
@@ -489,12 +495,13 @@ void FrontlightManager::apply() {
   // Splitting integer percentages first loses both fractional parts at low
   // levels: brightness=1, warmth=50 previously became cool=0% + warm=0%.
   // Splitting the total duty also keeps cool+warm equal to the requested total.
+  // Every duty below is in 1/16 LSB (see writeChannel).
   uint32_t totalDuty = 0;
   if (_useLevel && _brightnessLevel > 0) {
     const uint32_t n = static_cast<uint32_t>(_brightnessLevel - 1u);
-    totalDuty = 1u + (n * n * (full - 1u)) / (254u * 254u);
+    totalDuty = (1u + (n * n * (full - 1u)) / (254u * 254u)) * 16u;
   } else if (!_useLevel) {
-    totalDuty = FrontlightGamma::perceptualDuty(_brightness, full);
+    totalDuty = FrontlightGamma::perceptualDuty16(_brightnessQ8, full);
   }
   // Boost-EN floor. On a light whose PWM gates a boost converter's EN pin, an
   // on-time under the boost's start-up window produces NO light, so the dim end
@@ -504,9 +511,10 @@ void FrontlightManager::apply() {
   // shape, 1% becomes the dimmest level the hardware can actually sustain, and
   // boards with no floor configured are untouched (holdFloor == 0 leaves the
   // identity mapping).
-  const uint32_t holdFloor = (full * fl.minHoldPermille + 500u) / 1000u;
+  const uint32_t holdFloor = (full * fl.minHoldPermille + 500u) / 1000u * 16u;
   if (totalDuty > 0 && holdFloor > 0) {
-    totalDuty = holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full - holdFloor)) / full);
+    totalDuty =
+        holdFloor + static_cast<uint32_t>((static_cast<uint64_t>(totalDuty) * (full * 16u - holdFloor)) / (full * 16u));
   }
   uint32_t warmDuty = 0;
   uint32_t coolDuty = totalDuty;
@@ -521,7 +529,7 @@ void FrontlightManager::apply() {
   // from dark into the hold band gets a brief burst at the ignition floor, then
   // settles to the target -- which is what lets minHoldPermille sit below
   // minStartPermille and 1% reach a level the boost could never start at.
-  const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u;
+  const uint32_t startFloor = (full * fl.minStartPermille + 500u) / 1000u * 16u;
   if (_lastTotalDuty == 0 && totalDuty > 0 && startFloor > 0 && totalDuty < startFloor) {
     const uint32_t kickWarm = dual ? (startFloor * _warmPercent + 50u) / 100u : 0;
     writeChannel(fl.gpio, LEDC_CH_COOL, physicalDuty(startFloor - kickWarm, full, fl.activeHigh));
@@ -626,21 +634,28 @@ void FrontlightManager::flushLog() {
 #if FREEINK_CAP_FRONTLIGHT
   if (!gLog.pending || millis() - gLog.changedMs < LOG_SETTLE_MS) return;
   gLog.pending = false;
-  LOG_DBG("FrontlightMgr", "apply: brightness=%u level=%u totalDuty=%u coolDuty=%u warmDuty=%u lit=%d", gLog.brightness,
+  LOG_DBG("FrontlightMgr", "apply: brightness=%u level=%u duty16 total=%u cool=%u warm=%u lit=%d", gLog.brightness,
           gLog.level, gLog.total, gLog.cool, gLog.warm, gLog.total != 0 ? 1 : 0);
 #endif
 }
 
 void FrontlightManager::setBrightness(uint8_t percent) {
+  setBrightnessFine(static_cast<uint16_t>((percent > 100 ? 100 : percent) * 256u));
+}
+
+void FrontlightManager::setBrightnessFine(uint16_t q8) {
 #if FREEINK_CAP_FRONTLIGHT
-  if (percent > 100) percent = 100;
+  if (q8 > 100u * 256u) q8 = 100u * 256u;
+  _brightnessQ8 = q8;
+  // Rounded up: a fine level lights boards that only take whole % (PM1, I2C drivers).
+  const uint8_t percent = static_cast<uint8_t>((q8 + 255u) >> 8);
   _brightness = percent;
   _brightnessLevel = (static_cast<uint16_t>(percent) * 255u) / 100u;
   _useLevel = false;
   if (percent > 0) _lastBrightness = percent;
   apply();
 #else
-  (void)percent;
+  (void)q8;
 #endif
 }
 
