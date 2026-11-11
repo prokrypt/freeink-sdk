@@ -93,11 +93,12 @@ void PowerManager::waitForPowerButtonRelease() {
 
   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
   const int pressedLevel = activeHigh ? HIGH : LOW;
-  if (digitalRead(pin) != pressedLevel) return;  // released long before: no bounce to wait out
-  // Two released reads 10 ms apart, so a release bounce can't arm the wake pin while still low.
-  for (int released = 0; released < 2;) {
-    delay(10);
-    released = digitalRead(pin) == pressedLevel ? 0 : released + 1;
+  // Released for 10 ms straight, sampled every tick, so a release bounce can't
+  // arm the wake pin while still low. Already up costs 10 ms; held waits 10 ms
+  // past the release.
+  for (unsigned long since = millis(); millis() - since < 10;) {
+    delay(1);
+    if (digitalRead(pin) == pressedLevel) since = millis();
   }
 }
 
